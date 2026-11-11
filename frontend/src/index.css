@@ -1,0 +1,14 @@
+/* Global base only. All real styling lives in App.css. */
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  min-height: 100vh;
+}

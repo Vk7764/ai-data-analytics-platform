@@ -1,0 +1,8 @@
+venv/
+frontend/
+*.pyc
+__pycache__/
+.env
+backend/database/app_data.db
+backend/reports/output/
+.git/

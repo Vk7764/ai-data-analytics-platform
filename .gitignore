@@ -1,0 +1,51 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+env/
+ENV/
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs / temp
+*.log
+tmp/
+temp/
+reports_tmp/
+
+# Local databases / runtime data
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# Generated repo/context dumps
+repomix_*.txt
+project_tree.txt

@@ -1,8 +1,7 @@
 # Privacy Policy
 
-**Last updated: 7 November 2026**
+**Last updated: 13 November 2026**
 
-** This is a starting template, not legal advice. Have it reviewed by a lawyer familiar with Indian law (DPDP Act) and any other country your users are in before publishing it live.
 
 This Privacy Policy explains what data AI Data Analytics Platform ("the Service") collects, how it's used, and your choices.
 

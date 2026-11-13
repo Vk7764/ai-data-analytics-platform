@@ -23,6 +23,17 @@ MAX_DATASET_CELLS = _env_int("MAX_DATASET_CELLS", 50_000_000)  # rows x columns 
 MAX_USER_CELLS = _env_int("MAX_USER_CELLS", 100_000_000)  # rows x columns across all of a user's datasets
 
 
+def configure_sqlite_connection(conn: sqlite3.Connection) -> sqlite3.Connection:
+    """Shared SQLite settings: wait up to 30s for locks and use WAL so readers do not block writers."""
+    conn.execute("PRAGMA busy_timeout = 30000")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+    except sqlite3.DatabaseError:
+        pass  # Keep the default journal mode if WAL is unsupported on this filesystem.
+    return conn
+
+
 class DatasetLimitExceeded(Exception):
     """Raised when a new dataset would exceed the per-user dataset-count or storage limits."""
     status_code = 413
@@ -226,7 +237,7 @@ class DatasetStore:
             if not row:
                 return None
             table_name = row[0]
-            return pd.read_sql(f"SELECT * FROM {table_name}", conn)
+            return pd.read_sql(f'SELECT * FROM "{table_name}"', conn)
         finally:
             conn.close()
 
@@ -283,19 +294,22 @@ class DatasetStore:
             conn.close()
 
     @staticmethod
-    def list_all(user_id: str, search: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_all(user_id: str, search: Optional[str] = None, limit: Optional[int] = 200) -> List[Dict[str, Any]]:
+        # limit=None means unlimited (used only by account deletion); SQLite treats LIMIT -1 as no limit.
+        row_limit = -1 if limit is None else max(1, int(limit))
         conn = _get_connection()
         try:
             if search and search.strip():
                 rows = conn.execute(
                     "SELECT id, filename, uploaded_at FROM datasets_meta "
-                    "WHERE user_id = ? AND LOWER(filename) LIKE ? ORDER BY uploaded_at DESC",
-                    (user_id, f"%{search.strip().lower()}%"),
+                    "WHERE user_id = ? AND LOWER(filename) LIKE ? ORDER BY uploaded_at DESC LIMIT ?",
+                    (user_id, f"%{search.strip().lower()}%", row_limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id, filename, uploaded_at FROM datasets_meta WHERE user_id = ? ORDER BY uploaded_at DESC",
-                    (user_id,),
+                    "SELECT id, filename, uploaded_at FROM datasets_meta WHERE user_id = ? "
+                    "ORDER BY uploaded_at DESC LIMIT ?",
+                    (user_id, row_limit),
                 ).fetchall()
             return [{"dataset_id": r[0], "filename": r[1], "uploaded_at": r[2]} for r in rows]
         finally:
@@ -313,16 +327,16 @@ class DatasetStore:
             if not row:
                 return False
             table_name = row[0]
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
             stale_snapshots = conn.execute(
                 "SELECT snapshot_table FROM dataset_undo_stack WHERE dataset_id = ?", (dataset_id,)
             ).fetchall()
             for (snap,) in stale_snapshots:
-                conn.execute(f"DROP TABLE IF EXISTS {snap}")
+                conn.execute(f'DROP TABLE IF EXISTS "{snap}"')
                 conn.execute(f'DROP TABLE IF EXISTS "{_dtype_table_name(snap)}"')
             conn.execute("DELETE FROM dataset_undo_stack WHERE dataset_id = ?", (dataset_id,))
             conn.execute("DELETE FROM dataset_notes WHERE dataset_id = ?", (dataset_id,))
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}__undo")
+            conn.execute(f'DROP TABLE IF EXISTS "{table_name}__undo"')
             conn.execute("DELETE FROM datasets_meta WHERE id = ? AND user_id = ?", (dataset_id, user_id))
             conn.execute("DELETE FROM dataset_snapshot_meta WHERE dataset_id = ?", (dataset_id,))
             conn.execute("DELETE FROM dataset_audit_log WHERE dataset_id = ?", (dataset_id,))
@@ -395,7 +409,7 @@ class DatasetStore:
             )
 
             # Migrate away from the legacy single-snapshot format.
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}__undo")
+            conn.execute(f'DROP TABLE IF EXISTS "{table_name}__undo"')
             conn.execute("DELETE FROM dataset_snapshot_meta WHERE dataset_id = ?", (dataset_id,))
 
             entries = conn.execute(
@@ -404,7 +418,7 @@ class DatasetStore:
             ).fetchall()
             while len(entries) > UNDO_STACK_LIMIT:
                 oldest_id, oldest_table = entries.pop(0)
-                conn.execute(f"DROP TABLE IF EXISTS {oldest_table}")
+                conn.execute(f'DROP TABLE IF EXISTS "{oldest_table}"')
                 conn.execute(f'DROP TABLE IF EXISTS "{_dtype_table_name(oldest_table)}"')
                 conn.execute("DELETE FROM dataset_undo_stack WHERE id = ?", (oldest_id,))
             conn.commit()
@@ -474,10 +488,10 @@ class DatasetStore:
             if not exists:
                 raise ValueError("Nothing to undo.")
 
-            df = pd.read_sql(f"SELECT * FROM {snapshot_table}", conn)
+            df = pd.read_sql(f'SELECT * FROM "{snapshot_table}"', conn)
             df = _restore_snapshot_dtypes(conn, snapshot_table, df)
             df.to_sql(table_name, conn, index=False, if_exists="replace")
-            conn.execute(f"DROP TABLE IF EXISTS {snapshot_table}")
+            conn.execute(f'DROP TABLE IF EXISTS "{snapshot_table}"')
             conn.execute(f'DROP TABLE IF EXISTS "{_dtype_table_name(snapshot_table)}"')
 
             if entry_id is not None:
@@ -571,7 +585,7 @@ class DatasetStore:
 
             rows = conn.execute(
                 "SELECT id, title, analysis_type, data_version, created_at FROM saved_analyses "
-                "WHERE dataset_id = ? AND user_id = ? ORDER BY created_at DESC",
+                "WHERE dataset_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 200",
                 (dataset_id, user_id),
             ).fetchall()
 
@@ -818,6 +832,7 @@ class DatasetStore:
                 FROM dataset_audit_log
                 WHERE dataset_id = ?
                 ORDER BY id DESC
+                LIMIT 500
                 """,
                 (dataset_id,),
             ).fetchall()

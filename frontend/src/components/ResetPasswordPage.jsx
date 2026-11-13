@@ -1,8 +1,6 @@
 // frontend/src/components/ResetPasswordPage.jsx
 import { useState } from "react";
-import axios from "axios";
-
-import { BASE_URL } from "../api";
+import api from "../api";
 import { errorDetail } from "../utils";
 
 function ResetPasswordPage({ token, onDone }) {
@@ -17,7 +15,7 @@ function ResetPasswordPage({ token, onDone }) {
     setError(null);
 
     try {
-        await axios.post(`${BASE_URL}/api/auth/reset-password`, {
+        await api.post("/auth/reset-password", {
         token,
         new_password: newPassword,
       });

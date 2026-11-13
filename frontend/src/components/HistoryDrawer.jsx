@@ -3,8 +3,10 @@ import { useState, useEffect } from "react";
 import api from "../api";
 import { errorDetail } from "../utils";
 import DatasetShareLinks from "./DatasetShareLinks";
+import { useLanguage } from "../i18n";
 
 function HistoryDrawer({ onSelectDataset, activeDatasetId, onDeleteDataset }) {
+  const { t } = useLanguage();
   const [isOpen, setIsOpen] = useState(false);
   const [datasets, setDatasets] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -69,7 +71,7 @@ function HistoryDrawer({ onSelectDataset, activeDatasetId, onDeleteDataset }) {
 
   const handleDelete = async (datasetId, e) => {
     e.stopPropagation();
-    if (!window.confirm("Delete this dataset permanently?")) return;
+    if (!window.confirm(t("confirmDeleteDataset"))) return;
     try {
       await api.delete(`/dataset/${datasetId}`);
       onDeleteDataset?.(datasetId);
@@ -91,7 +93,7 @@ function HistoryDrawer({ onSelectDataset, activeDatasetId, onDeleteDataset }) {
 
   const handleRename = async (d, e) => {
     e.stopPropagation();
-    const newName = window.prompt("Enter a new name for this dataset:", d.filename);
+    const newName = window.prompt(t("renamePrompt"), d.filename);
     if (newName === null) return;
     try {
       await api.patch(`/dataset/${d.dataset_id}`, { filename: newName });
@@ -113,43 +115,43 @@ function HistoryDrawer({ onSelectDataset, activeDatasetId, onDeleteDataset }) {
         <div className="drawer-overlay" onClick={() => setIsOpen(false)}>
           <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
-              <h2>History</h2>
+              <h2>{t("historyTitle")}</h2>
               <button className="drawer-close" onClick={() => setIsOpen(false)} aria-label="Close">
                 &times;
               </button>
             </div>
 
-            {loading && <p className="subtitle">Loading...</p>}
+            {loading && <p className="subtitle">{t("loading")}</p>}
             {error && <p className="error-text">{error}</p>}
             {!loading && datasets.length === 0 && (
-              <p className="subtitle">No datasets uploaded yet.</p>
+              <p className="subtitle">{t("historyEmpty")}</p>
             )}
 
             <input
               type="text"
-              placeholder="Search datasets by name or date..."
+              placeholder={t("historySearchPlaceholder")}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               style={{ width: "100%", marginBottom: "16px" }}
             />
 
             {!loading && datasets.length > 0 && visibleDatasets.length === 0 && (
-              <p className="subtitle">No datasets match your search.</p>
+              <p className="subtitle">{t("historyNoMatch")}</p>
             )}
 
             <ul className="history-list">
               {visibleDatasets.map((d) => (
                 <li key={d.dataset_id} className="history-item" onClick={() => handleSelect(d.dataset_id)}>
                   <div>
-                    <strong>{d.filename}{activeDatasetId === d.dataset_id ? " (Active)" : ""}</strong>
+                    <strong>{d.filename}{activeDatasetId === d.dataset_id ? t("activeTag") : ""}</strong>
                     <p>{d.uploaded_at}</p>
                   </div>
                   <div className="button-group">
                     <button className="logout-button" onClick={(e) => handleDuplicate(d, e)}>
-                      Duplicate
+                      {t("duplicate")}
                     </button>
                     <button className="logout-button" onClick={(e) => handleRename(d, e)}>
-                      Rename
+                      {t("rename")}
                     </button>
                     <button
                       className="logout-button"
@@ -158,10 +160,10 @@ function HistoryDrawer({ onSelectDataset, activeDatasetId, onDeleteDataset }) {
                         setShareTarget({ datasetId: d.dataset_id, displayName: d.filename });
                       }}
                     >
-                      Share
+                      {t("share")}
                     </button>
                     <button className="delete-button" onClick={(e) => handleDelete(d.dataset_id, e)}>
-                      Delete
+                      {t("delete")}
                     </button>
                   </div>
                 </li>

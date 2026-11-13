@@ -1,6 +1,5 @@
 # backend/analytics/anomaly.py
 import pandas as pd
-from backend.visualization.charts import ChartEngine
 import numpy as np
 from typing import List, Dict, Any
 from backend.visualization.charts import ChartEngine

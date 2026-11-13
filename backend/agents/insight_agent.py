@@ -1,10 +1,13 @@
 # backend/agents/insight_agent.py
+import logging
 import pandas as pd
 from typing import Dict, Any
 
 from backend.agents.sql_agent import SQLAgent, _redact_pii_for_prompt  # reuse the same LLM fallback chain and PII helper
 from backend.data.profiler import DataProfiler
 from backend.visualization.charts import ChartEngine
+
+logger = logging.getLogger("app")
 
 
 def _redact_breakdown(breakdown):
@@ -103,7 +106,7 @@ Insight:"""
         for provider_fn, name in providers:
             raw_output = provider_fn(prompt)
             if raw_output:
-                print(f"[InsightAgent] Insight generated using '{name}' provider.")
+                logger.info(f"[InsightAgent] Insight generated using '{name}' provider.")
                 return {
                     "insight": raw_output.strip(),
                     "data_summary": data_summary,
@@ -155,7 +158,7 @@ Explanation:"""
         for provider_fn, name in providers:
             raw_output = provider_fn(prompt)
             if raw_output:
-                print(f"[InsightAgent] Anomaly explanation generated using '{name}' provider.")
+                logger.info(f"[InsightAgent] Anomaly explanation generated using '{name}' provider.")
                 return {"explanation": raw_output.strip()}
 
         raise RuntimeError("All LLM providers failed. Check if Ollama is running.")
@@ -191,7 +194,7 @@ Explanation:"""
         for provider_fn, name in providers:
             raw_output = provider_fn(prompt)
             if raw_output:
-                print(f"[InsightAgent] Root cause explanation generated using '{name}' provider.")
+                logger.info(f"[InsightAgent] Root cause explanation generated using '{name}' provider.")
                 return {"explanation": raw_output.strip()}
 
         raise RuntimeError("All LLM providers failed. Check if Ollama is running.")

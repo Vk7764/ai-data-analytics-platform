@@ -105,14 +105,10 @@ class Forecaster:
                 "aggregation": "sum of the value column per calendar day",
                 "model": "Ordinary least-squares linear regression (degree 1) of the daily value on elapsed days since the first date",
                 "slope_per_day": (
-                    round(float(locals().get("slope", 0.0)), 6)
-                    if bool(np.isfinite(locals().get("slope", 0.0)))
-                    else None
+                    round(float(slope), 6) if bool(np.isfinite(slope)) else None
                 ),
                 "intercept": (
-                    round(float(locals().get("intercept", 0.0)), 6)
-                    if bool(np.isfinite(locals().get("intercept", 0.0)))
-                    else None
+                    round(float(intercept), 6) if bool(np.isfinite(intercept)) else None
                 ),
                 "periods_requested": int(periods),
                 "future_date_rule": (
@@ -121,13 +117,11 @@ class Forecaster:
                     else "Future dates are spaced by the median gap between observed dates."
                 ),
                 "inferred_frequency": inferred_freq,
-                "median_gap_between_dates": str(locals().get("avg_gap", "")),
+                "median_gap_between_dates": str(avg_gap),
                 "uncertainty": {
                     "lower_upper_bound_rule": "prediction +/- 1.96 x standard deviation of the in-sample residuals",
                     "residual_std": (
-                        round(float(locals().get("residual_std", 0.0)), 4)
-                        if bool(np.isfinite(locals().get("residual_std", 0.0)))
-                        else None
+                        round(float(residual_std), 4) if bool(np.isfinite(residual_std)) else None
                     ),
                     "note": "An approximate band that assumes constant, roughly normal residuals; it is not a full prediction interval.",
                 },

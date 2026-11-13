@@ -1,9 +1,12 @@
 # backend/agents/report_agent.py
+import logging
 import pandas as pd
 from typing import Dict, Any
 
 from backend.agents.sql_agent import SQLAgent
 from backend.agents.insight_agent import InsightAgent
+
+logger = logging.getLogger("app")
 
 
 class ReportAgent:
@@ -27,7 +30,7 @@ Recommendations:"""
         for provider_fn, name in SQLAgent.get_provider_chain():
             raw_output = provider_fn(prompt)
             if raw_output:
-                print(f"[ReportAgent] Recommendations generated using '{name}' provider.")
+                logger.info(f"[ReportAgent] Recommendations generated using '{name}' provider.")
                 return {"recommendations": raw_output.strip(), "ai_generated": True}
 
         raise RuntimeError("All LLM providers failed. Check if Ollama is running.")

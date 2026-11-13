@@ -1,12 +1,12 @@
-# docker-compose.yml — ties the backend and frontend containers together.
-# On the real server, deployment becomes just: docker compose up -d --build
 services:
   backend:
-    build: .
+    build:
+      context: .
+      args:
+        INSTALL_DOCKER_CLI: "0"
     env_file: .env
     volumes:
-      - ./backend/database:/app/backend/database   # keep the SQLite file persistent across restarts
-      - /var/run/docker.sock:/var/run/docker.sock   # lets the Python Agent spawn its own sandbox containers
+      - ./backend/database:/app/backend/database
     restart: unless-stopped
 
   frontend:

@@ -8,7 +8,10 @@ from threading import Lock
 from fastapi import Request, HTTPException
 import jwt as pyjwt
 
-from backend.auth.auth import verify_token
+import hmac
+
+from backend.auth.auth import decode_token
+from backend.auth.user_store import UserStore
 from backend.database.dataset_store import DB_PATH
 
 # Optional shared limiter: set RATE_LIMIT_SHARED=1 to count requests in the existing SQLite database,
@@ -202,8 +205,14 @@ def get_client_key(request: Request) -> str:
             # right after, so a tampered token simply falls back to IP
             # keying rather than being trusted for anything.
             # The signature and expiry are verified: forged or rotated fake tokens fall through to IP keying.
-            user_id = verify_token(token)
-            if user_id:
+            payload = decode_token(token)
+            user_id = payload.get("sub")
+            fingerprint = UserStore.get_auth_fingerprint(user_id) if user_id else None
+            if (
+                user_id
+                and fingerprint is not None
+                and hmac.compare_digest(fingerprint, str(payload.get("pwv", "")))
+            ):
                 return f"user:{user_id}"
         except Exception:
             pass
@@ -217,7 +226,24 @@ def get_client_key(request: Request) -> str:
     except ValueError:
         from_private_proxy = False
     if from_private_proxy:
-        forwarded_ip = (request.headers.get("x-real-ip") or "").strip()
+        forwarded_ip = ""
+        xff_parts = [
+            p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",") if p.strip()
+        ]
+        if xff_parts:
+            # The proxy appends the real client address, so count from the right.
+            # Set TRUSTED_PROXY_HOPS=2 if two proxies (for example Cloudflare + the host) sit in front.
+            try:
+                hops = max(1, int(os.environ.get("TRUSTED_PROXY_HOPS", "1")))
+            except ValueError:
+                hops = 1
+            forwarded_ip = xff_parts[-hops] if len(xff_parts) >= hops else xff_parts[0]
+        if not forwarded_ip:
+            forwarded_ip = (request.headers.get("x-real-ip") or "").strip()
+        try:
+            forwarded_ip = str(ipaddress.ip_address(forwarded_ip))
+        except ValueError:
+            forwarded_ip = ""
         if forwarded_ip:
             return f"ip:{forwarded_ip}"
 

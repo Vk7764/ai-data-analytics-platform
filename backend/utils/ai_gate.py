@@ -1,6 +1,7 @@
 # backend/utils/ai_gate.py
 import os
 import json
+import time
 import threading
 import hashlib
 import sqlite3
@@ -10,8 +11,9 @@ from typing import Any, Callable, Dict, Optional
 import pandas as pd
 from fastapi import HTTPException
 
-from backend.database.dataset_store import DB_PATH
+from backend.database.dataset_store import DB_PATH, configure_sqlite_connection
 from backend.auth.user_store import UserStore
+from backend.utils.email_sender import email_verification_required
 
 
 def _int_env(name: str, default: int) -> int:
@@ -56,7 +58,7 @@ def _today_ist() -> str:
 
 
 def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = configure_sqlite_connection(sqlite3.connect(DB_PATH, timeout=30))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ai_usage (
             user_id TEXT,
@@ -74,7 +76,37 @@ def _get_connection() -> sqlite3.Connection:
             created_at TEXT
         )
     """)
+    _purge_stale_rows(conn)
     return conn
+
+
+_PURGE_INTERVAL_SECONDS = 3600
+_USAGE_RETENTION_DAYS = 7
+_PURGE_LOCK = threading.Lock()
+_last_purge_at = 0.0
+
+
+def _purge_stale_rows(conn: sqlite3.Connection) -> None:
+    """At most once per hour per process: removes expired AI cache rows and old daily-usage counters."""
+    global _last_purge_at
+    now = time.time()
+    with _PURGE_LOCK:
+        if now - _last_purge_at < _PURGE_INTERVAL_SECONDS:
+            return
+        _last_purge_at = now
+    try:
+        cache_cutoff = (
+            datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+            - datetime.timedelta(days=CACHE_MAX_AGE_DAYS)
+        ).isoformat()
+        usage_cutoff = (
+            datetime.date.fromisoformat(_today_ist()) - datetime.timedelta(days=_USAGE_RETENTION_DAYS)
+        ).isoformat()
+        conn.execute("DELETE FROM ai_cache WHERE created_at < ?", (cache_cutoff,))
+        conn.execute("DELETE FROM ai_usage WHERE usage_date < ?", (usage_cutoff,))
+        conn.commit()
+    except sqlite3.Error:
+        pass
 
 
 def daily_limit_for(user_id: str) -> int:
@@ -168,14 +200,33 @@ class AICache:
 
 
 def _fingerprint(df: pd.DataFrame) -> str:
-    """A hash of the dataset's current contents: any cleaning action changes it, which makes old cache entries unusable."""
+    """A hash of the dataset's current contents: any cleaning action changes it, which makes old cache entries unusable.
+
+    Memoized on the frame itself via df.attrs: the hash is deterministic for an
+    unchanged frame and is requested many times per request. Cleaning actions
+    produce fresh frames loaded from the store, so the cache cannot go stale.
+    """
+    try:
+        cached = df.attrs.get("_data_fingerprint_cache")
+        if isinstance(cached, str) and cached:
+            return cached
+    except Exception:
+        pass
+
     h = hashlib.sha256()
     h.update("|".join(map(str, df.columns)).encode("utf-8"))
     try:
         h.update(pd.util.hash_pandas_object(df, index=False).values.tobytes())
     except Exception:
         h.update(df.to_csv(index=False).encode("utf-8"))
-    return h.hexdigest()
+    fingerprint = h.hexdigest()
+
+    try:
+        df.attrs["_data_fingerprint_cache"] = fingerprint
+    except Exception:
+        pass
+
+    return fingerprint
 
 
 def get_data_version(df: pd.DataFrame) -> str:
@@ -202,7 +253,7 @@ def quota_message(user_id: str) -> str:
 
 
 def consume_quota_or_raise(user_id: str) -> None:
-    if not UserStore.is_email_verified(user_id):
+    if email_verification_required() and not UserStore.is_email_verified(user_id):
         raise EmailNotVerified(
             "Please verify your email address to use AI features. "
             "Check your inbox for the verification link, or use the Resend button at the top of the page."

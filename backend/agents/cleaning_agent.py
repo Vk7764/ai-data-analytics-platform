@@ -1,10 +1,13 @@
 # backend/agents/cleaning_agent.py
+import logging
 import pandas as pd
 from typing import Dict, Any
 
 from backend.agents.sql_agent import SQLAgent
 from backend.data.profiler import DataProfiler
 from backend.data.cleaner import DataCleaner
+
+logger = logging.getLogger("app")
 
 
 class CleaningAgent:
@@ -69,7 +72,7 @@ Advice:"""
         for provider_fn, name in SQLAgent.get_provider_chain():
             raw_output = provider_fn(prompt)
             if raw_output:
-                print(f"[CleaningAgent] Advice generated using '{name}' provider.")
+                logger.info(f"[CleaningAgent] Advice generated using '{name}' provider.")
                 return {"advice": raw_output.strip()}
 
         raise RuntimeError("All LLM providers failed. Check if Ollama is running.")

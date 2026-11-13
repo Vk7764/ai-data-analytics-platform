@@ -1,10 +1,11 @@
 // frontend/src/components/LoginForm.jsx
 import { useState } from "react";
-import axios from "axios";
-import { BASE_URL } from "../api";
+import api from "../api";
 import { errorDetail } from "../utils";
+import { useLanguage } from "../i18n";
 
 function LoginForm({ onLoginSuccess, initialMode = "login" }) {
+  const { t } = useLanguage();
   const [mode, setMode] = useState(initialMode); // "login" | "signup" | "forgot"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -23,7 +24,7 @@ function LoginForm({ onLoginSuccess, initialMode = "login" }) {
     resetMessages();
 
     if (mode === "signup" && !acceptedTerms) {
-      setError("Please accept the Terms of Service and Privacy Policy to create an account.");
+      setError(t("termsError"));
       return;
     }
 
@@ -31,10 +32,10 @@ function LoginForm({ onLoginSuccess, initialMode = "login" }) {
 
     try {
       if (mode === "forgot") {
-        const response = await axios.post(`${BASE_URL}/api/auth/forgot-password`, { email });
+        const response = await api.post("/auth/forgot-password", { email });
         setInfoMessage(response.data.message);
       } else if (mode === "signup") {
-        const response = await axios.post(`${BASE_URL}/api/auth/signup`, {
+        const response = await api.post("/auth/signup", {
           email,
           password,
           accepted_terms: acceptedTerms,
@@ -42,7 +43,7 @@ function LoginForm({ onLoginSuccess, initialMode = "login" }) {
         localStorage.setItem("access_token", response.data.access_token);
         onLoginSuccess();
       } else {
-        const response = await axios.post(`${BASE_URL}/api/auth/login`, { email, password });
+        const response = await api.post("/auth/login", { email, password });
         localStorage.setItem("access_token", response.data.access_token);
         onLoginSuccess();
       }
@@ -54,9 +55,9 @@ function LoginForm({ onLoginSuccess, initialMode = "login" }) {
   };
 
   const titles = {
-    login: "Please log in to continue",
-    signup: "Create your account",
-    forgot: "Reset your password",
+    login: t("loginTitle"),
+    signup: t("signupTitle"),
+    forgot: t("forgotTitle"),
   };
 
   return (
@@ -76,7 +77,7 @@ function LoginForm({ onLoginSuccess, initialMode = "login" }) {
         {mode !== "forgot" && (
           <input
             type="password"
-            placeholder={mode === "signup" ? "Password (min. 8 characters)" : "Password"}
+            placeholder={mode === "signup" ? t("passwordSignupPlaceholder") : t("passwordPlaceholder")}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
@@ -100,7 +101,7 @@ function LoginForm({ onLoginSuccess, initialMode = "login" }) {
         )}
 
         <button type="submit" disabled={loading}>
-          {loading ? "Please wait..." : mode === "signup" ? "Sign Up" : mode === "forgot" ? "Send Reset Link" : "Log In"}
+          {loading ? t("pleaseWait") : mode === "signup" ? t("signUp") : mode === "forgot" ? t("sendResetLink") : t("logIn")}
         </button>
 
         {error && <p className="error-text">{error}</p>}
@@ -110,26 +111,26 @@ function LoginForm({ onLoginSuccess, initialMode = "login" }) {
           {mode === "login" && (
             <>
               <button type="button" className="link-button" onClick={() => { setMode("forgot"); resetMessages(); }}>
-                Forgot password?
+                {t("forgotPassword")}
               </button>
               {" · "}
-              New here?{" "}
+              {t("newHere")}{" "}
               <button type="button" className="link-button" onClick={() => { setMode("signup"); resetMessages(); }}>
-                Sign up
+                {t("signUpLink")}
               </button>
             </>
           )}
           {mode === "signup" && (
             <>
-              Already have an account?{" "}
+              {t("haveAccount")}{" "}
               <button type="button" className="link-button" onClick={() => { setMode("login"); resetMessages(); }}>
-                Log in
+                {t("logInLink")}
               </button>
             </>
           )}
           {mode === "forgot" && (
             <button type="button" className="link-button" onClick={() => { setMode("login"); resetMessages(); }}>
-              Back to log in
+              {t("backToLogIn")}
             </button>
           )}
         </p>

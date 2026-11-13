@@ -19,14 +19,28 @@ from pydantic import BaseModel
 from backend.api.routes import router
 from backend.database.dataset_store import DatasetLimitExceeded
 from backend.auth.auth import create_token
-from backend.auth.user_store import UserStore
+from backend.auth.user_store import UserStore, is_valid_email
 from backend.auth.dependencies import require_auth
 from backend.auth.verification import send_verification_email, email_failure_message
 from backend.scheduling.runner import scheduler_supervisor
-from backend.utils.email_sender import send_email
+from backend.utils.email_sender import send_email, get_last_error, email_verification_required
 from backend.utils.rate_limiter import rate_limit, login_limiter
 
 logger = logging.getLogger("app")
+
+# Error monitoring (optional). Create a free project at https://sentry.io,
+# put SENTRY_DSN in .env, and unhandled errors get reported there automatically.
+try:
+    import sentry_sdk
+    _SENTRY_DSN = (os.environ.get("SENTRY_DSN") or "").strip()
+    if _SENTRY_DSN:
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+            traces_sample_rate=0.0,
+        )
+except ImportError:
+    pass  # sentry-sdk not installed: monitoring stays off, app runs normally.
 
 # Write errors to a rotating log file as well as the console, so problems
 # stay traceable after the terminal is closed.
@@ -40,6 +54,12 @@ _file_handler = RotatingFileHandler(
 _file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logger.addHandler(_file_handler)
 logger.setLevel(logging.INFO)
+
+_IS_PRODUCTION = (os.environ.get("ENV") or "").strip().lower() == "production"
+if _IS_PRODUCTION and os.environ.get("ALLOW_UNSAFE_LOCAL_EXEC") == "1":
+    raise RuntimeError(
+        "ALLOW_UNSAFE_LOCAL_EXEC=1 is not allowed when ENV=production. Remove it from the environment."
+    )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -67,6 +87,10 @@ _cors_origins_env = os.environ.get("APP_CORS_ORIGINS", "").strip()
 if _cors_origins_env:
     allowed_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 else:
+    if _IS_PRODUCTION:
+        raise RuntimeError(
+            "APP_CORS_ORIGINS must be set (comma-separated frontend URL(s)) when ENV=production."
+        )
     allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 app.add_middleware(
@@ -184,7 +208,7 @@ class LoginRequest(BaseModel):
 @app.post("/api/auth/signup")
 def signup(request: SignupRequest, _rate_limit=Depends(rate_limit(login_limiter))):
     """Creates an account, emails a verification link, and logs the user in immediately."""
-    if "@" not in request.email or "." not in request.email:
+    if not is_valid_email(request.email):
         raise HTTPException(status_code=400, detail="Please enter a valid email address.")
     if len(request.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
@@ -197,7 +221,7 @@ def signup(request: SignupRequest, _rate_limit=Depends(rate_limit(login_limiter)
         raise HTTPException(status_code=400, detail=str(e))
 
     # A failed email must not block signup: the user can use "Resend" later.
-    email_sent = send_verification_email(user_id, request.email)
+    email_sent = send_verification_email(user_id, request.email) if email_verification_required() else False
 
     token = create_token(user_id)
     return {"access_token": token, "token_type": "bearer", "verification_email_sent": email_sent}
@@ -228,7 +252,7 @@ def forgot_password(request: ForgotPasswordRequest, _rate_limit=Depends(rate_lim
     if token:
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
         reset_link = f"{frontend_url}/reset-password?token={token}"
-        send_email(
+        sent = send_email(
             to_email=request.email.strip().lower(),
             subject="Reset your password",
             body_html=f"""
@@ -237,6 +261,10 @@ def forgot_password(request: ForgotPasswordRequest, _rate_limit=Depends(rate_lim
                 <p>This link expires in 1 hour. If you didn't request this, you can ignore this email.</p>
             """,
         )
+        if not sent:
+            # The response to the user must stay generic (no account
+            # enumeration), but the failure must be visible in the server log.
+            logger.error("Password reset email could not be sent. Reason: %s", get_last_error())
 
     return {"message": "If an account with that email exists, a reset link has been sent."}
 

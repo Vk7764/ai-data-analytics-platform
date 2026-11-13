@@ -3,8 +3,11 @@ import os
 import re
 import time
 import threading
+import logging
 import requests
 from typing import Optional, List, Tuple
+
+logger = logging.getLogger("app")
 
 # ---------- Provider URLs & Free Model Catalogs ----------
 
@@ -16,6 +19,7 @@ OPENROUTER_FREE_MODELS = [
     "qwen/qwen-2.5-72b-instruct:free",
     "mistralai/mistral-small-3.1-24b-instruct:free",
     "deepseek/deepseek-chat-v3-0324:free",
+    "qwen/qwen3-coder:free",
     "deepseek/deepseek-r1:free",
     "google/gemma-3-12b-it:free",
     "meta-llama/llama-3.1-8b-instruct:free",
@@ -31,8 +35,6 @@ GROQ_FREE_MODELS = [
     "qwen-qwq-32b",
     "deepseek-r1-distill-llama-70b",
     "gemma2-9b-it",
-    "llama3-70b-8192",
-    "llama3-8b-8192",
 ]
 
 GEMINI_API_URL = "https://" + "generativelanguage.googleapis.com/v1beta/openai/chat/completions"
@@ -41,8 +43,6 @@ GEMINI_FREE_MODELS = [
     "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
 ]
 
 MISTRAL_API_URL = "https://" + "api.mistral.ai/v1/chat/completions"
@@ -70,7 +70,10 @@ ANTHROPIC_MODELS = [
     "claude-sonnet-4-6",
 ]
 
-OLLAMA_BASE_URL = "http://" + "127.0.0.1:11434"
+_ollama_host_env = (os.environ.get("OLLAMA_HOST") or "").strip().rstrip("/")
+if _ollama_host_env and not _ollama_host_env.startswith(("http://", "https://")):
+    _ollama_host_env = "http://" + _ollama_host_env
+OLLAMA_BASE_URL = _ollama_host_env or ("http://" + "127.0.0.1:11434")
 OLLAMA_GENERATE_URL = f"{OLLAMA_BASE_URL}/api/generate"
 OLLAMA_TAGS_URL = f"{OLLAMA_BASE_URL}/api/tags"
 OLLAMA_FALLBACK_MODELS = [
@@ -96,6 +99,36 @@ except ValueError:
     LLM_TOTAL_BUDGET_SECONDS = 40.0
 
 _BUDGET = threading.local()
+
+
+def _ollama_enabled() -> bool:
+    """Ollama is local-only: skipped on production/cloud hosts unless explicitly enabled."""
+    if (os.environ.get("OLLAMA_ENABLED") or "").strip() == "1":
+        return True
+    if (os.environ.get("OLLAMA_HOST") or "").strip():
+        return True
+    if (os.environ.get("ENV") or "").strip().lower() == "production":
+        return False
+    for cloud_marker in ("RENDER", "SPACE_ID", "SPACE_HOST", "DYNO", "KUBERNETES_SERVICE_HOST"):
+        if os.environ.get(cloud_marker):
+            return False
+    return True
+
+
+def _configured_providers_exist() -> bool:
+    key_names = (
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "GEMINI_API_KEY",
+        "MISTRAL_API_KEY",
+        "HUGGINGFACE_API_KEY",
+        "HF_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+        "ANTHROPIC_API_KEY",
+    )
+    if any((os.environ.get(name) or "").strip() for name in key_names):
+        return True
+    return _ollama_enabled()
 
 
 def _start_budget() -> None:
@@ -214,7 +247,7 @@ SQL Query:"""
             if _is_cooling_down(model_key):
                 continue
             if _budget_left() <= 0:
-                print(f"[SQLAgent] Time budget exhausted before trying {provider_name} '{model}'.")
+                logger.warning(f"[SQLAgent] Time budget exhausted before trying {provider_name} '{model}'.")
                 return None
 
             for attempt in range(2):
@@ -233,26 +266,26 @@ SQL Query:"""
                         timeout=(5, max(1.0, min(timeout, _budget_left()))),
                     )
                     if resp.status_code in (401, 403):
-                        print(f"[SQLAgent] {provider_name} auth error ({resp.status_code}) — skipping provider for 120s.")
+                        logger.warning(f"[SQLAgent] {provider_name} auth error ({resp.status_code}) — skipping provider for 120s.")
                         _set_cooldown(f"provider:{provider_name}", 120)
                         return None
                     if resp.status_code == 404:
-                        print(f"[SQLAgent] {provider_name} model '{model}' not found (404) — trying next free model.")
+                        logger.warning(f"[SQLAgent] {provider_name} model '{model}' not found (404) — trying next free model.")
                         _set_cooldown(model_key, 3600)
                         break
                     if resp.status_code == 429:
-                        print(f"[SQLAgent] {provider_name} model '{model}' rate-limited (429) — trying next free model.")
+                        logger.warning(f"[SQLAgent] {provider_name} model '{model}' rate-limited (429) — trying next free model.")
                         _set_cooldown(model_key, 45)
                         break
                     if not resp.ok:
-                        print(f"[SQLAgent] {provider_name} ({model}) HTTP {resp.status_code}: {resp.text[:160]}")
+                        logger.warning(f"[SQLAgent] {provider_name} ({model}) HTTP {resp.status_code}: {resp.text[:160]}")
                         _set_cooldown(model_key, 20)
                         break
 
                     data = resp.json()
                     content = _clean_llm_output(data.get("choices", [{}])[0].get("message", {}).get("content"))
                     if content:
-                        print(f"[SQLAgent] Success with {provider_name} -> '{model}'")
+                        logger.info(f"[SQLAgent] Success with {provider_name} -> '{model}'")
                         return content
                     break
 
@@ -260,15 +293,15 @@ SQL Query:"""
                     if attempt == 0:
                         time.sleep(0.4)
                         continue
-                    print(f"[SQLAgent] {provider_name} connection/DNS failed: {e}")
+                    logger.warning(f"[SQLAgent] {provider_name} connection/DNS failed: {e}")
                     _set_cooldown(f"provider:{provider_name}", 15)
                     return None
                 except requests.exceptions.Timeout:
-                    print(f"[SQLAgent] {provider_name} ({model}) timed out — trying next model.")
+                    logger.warning(f"[SQLAgent] {provider_name} ({model}) timed out — trying next model.")
                     _set_cooldown(model_key, 20)
                     break
                 except Exception as e:
-                    print(f"[SQLAgent] {provider_name} ({model}) failed: {e}")
+                    logger.warning(f"[SQLAgent] {provider_name} ({model}) failed: {e}")
                     break
 
         return None
@@ -333,7 +366,7 @@ SQL Query:"""
                 if candidates:
                     parts = candidates[0].get("content", {}).get("parts", [])
                     if parts and parts[0].get("text"):
-                        print(f"[SQLAgent] Success with Gemini Native -> '{model}'")
+                        logger.info(f"[SQLAgent] Success with Gemini Native -> '{model}'")
                         return _clean_llm_output(parts[0]["text"])
             except requests.exceptions.ConnectionError:
                 _set_cooldown("provider:Gemini", 15)
@@ -366,7 +399,7 @@ SQL Query:"""
         api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
         if not api_key or _is_cooling_down("provider:Anthropic"):
             return None
-        for model in ANTHROPIC_MODELS:
+        for model in _dedupe_models([(os.environ.get("ANTHROPIC_MODEL") or "").strip()], ANTHROPIC_MODELS):
             model_key = f"model:Anthropic:{model}"
             if _is_cooling_down(model_key):
                 continue
@@ -388,7 +421,7 @@ SQL Query:"""
                     timeout=(5, 15),
                 )
                 if resp.status_code in (401, 403):
-                    print(f"[SQLAgent] Anthropic auth error ({resp.status_code}) — skipping provider for 120s.")
+                    logger.warning(f"[SQLAgent] Anthropic auth error ({resp.status_code}) — skipping provider for 120s.")
                     _set_cooldown("provider:Anthropic", 120)
                     return None
                 if resp.status_code == 404:
@@ -398,7 +431,7 @@ SQL Query:"""
                     continue
                 text = _clean_llm_output(resp.json().get("content", [{}])[0].get("text"))
                 if text:
-                    print(f"[SQLAgent] Success with Anthropic -> '{model}'")
+                    logger.info(f"[SQLAgent] Success with Anthropic -> '{model}'")
                     return text
             except requests.exceptions.ConnectionError:
                 _set_cooldown("provider:Anthropic", 15)
@@ -409,6 +442,8 @@ SQL Query:"""
 
     @staticmethod
     def _try_ollama(prompt: str) -> Optional[str]:
+        if not _ollama_enabled():
+            return None
         if _is_cooling_down("provider:Ollama"):
             return None
         env_model = (os.environ.get("OLLAMA_MODEL") or "").strip()
@@ -435,7 +470,7 @@ SQL Query:"""
                     continue
                 out = _clean_llm_output(resp.json().get("response"))
                 if out:
-                    print(f"[SQLAgent] Success with Ollama -> '{model}'")
+                    logger.info(f"[SQLAgent] Success with Ollama -> '{model}'")
                     return out
             except requests.exceptions.ConnectionError:
                 _set_cooldown("provider:Ollama", 30)
@@ -452,6 +487,12 @@ SQL Query:"""
         available free models before moving to the next provider.
         """
         _start_budget()
+        if not _configured_providers_exist():
+            raise RuntimeError(
+                "No AI provider is configured on this server. Set at least one API key "
+                "(OPENROUTER_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY, "
+                "HUGGINGFACE_API_KEY or ANTHROPIC_API_KEY)."
+            )
         return [
             (SQLAgent._try_openrouter, "OpenRouter"),
             (SQLAgent._try_groq, "Groq"),
@@ -469,7 +510,7 @@ SQL Query:"""
         for provider_fn, name in SQLAgent.get_provider_chain():
             raw_output = provider_fn(prompt)
             if raw_output:
-                print(f"[SQLAgent] SQL generated using '{name}' provider.")
+                logger.info(f"[SQLAgent] SQL generated using '{name}' provider.")
                 return SQLAgent._extract_sql(raw_output)
 
         raise RuntimeError("All LLM providers failed. Check your API keys and network connection.")

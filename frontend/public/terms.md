@@ -1,8 +1,7 @@
 # Terms of Service
 
-**Last updated: 7 November 2026**
+**Last updated: 13 November 2026**
 
-** This is a starting template, not legal advice. Have it reviewed by a lawyer familiar with Indian law (and any other country your users are in) before publishing it live.
 
 Welcome to AI Data Analytics Platform ("the Service"), operated by Vikash Kumar ("we", "us"). By creating an account or using the Service, you agree to these Terms.
 
@@ -44,5 +43,13 @@ We may update these Terms from time to time. Continued use of the Service after 
 ## 10. Governing Law
 These Terms are governed by the laws of India, without regard to conflict-of-law principles.
 
-## 11. Contact
+## 11. Payments, Refunds and Cancellation
+- Premium upgrades are paid in Indian Rupees (INR) through Razorpay. The price is shown at checkout before you pay. We do not store your card, UPI, or bank details; they are handled by Razorpay.
+- Premium is currently a one-time purchase with no recurring billing, so there is no subscription to cancel.
+- Because Premium features are unlocked immediately after payment, payments are generally non-refundable.
+- We will refund a payment that was charged twice by mistake, or one where payment succeeded but Premium was not activated and we cannot fix it. Email us within 7 days of the payment with your account email and payment ID.
+- Approved refunds are returned to the original payment method, typically within 5 to 7 business days.
+- If a payment fails or is not completed, any amount debited by your bank is normally reversed automatically by the bank or Razorpay within 5 to 7 business days.
+
+## 12. Contact
 Questions about these Terms: vikashkumar47023@gmail.com

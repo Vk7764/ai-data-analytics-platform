@@ -1,8 +1,13 @@
 # backend/api/routes.py
+import datetime
+import io
 import os
 import re
 import threading
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from urllib.parse import urlparse, urljoin
+
+import requests
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Request
 from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -12,18 +17,20 @@ from backend.data.loader import DataLoader
 from backend.data.profiler import DataProfiler
 from backend.data.cleaner import DataCleaner
 from backend.agents.sql_agent import SQLAgent
-from backend.agents.python_agent import PythonAgent
+from backend.agents.python_agent import PythonAgent, SandboxUnavailableError
+from backend.sandbox.docker_runner import is_sandbox_available
 from backend.agents.insight_agent import InsightAgent
 from backend.agents.cleaning_agent import CleaningAgent
 from backend.agents.report_agent import ReportAgent
 from backend.agents.orchestrator import Orchestrator
-from backend.database.db_connector import get_connection_with_data, run_query, validate_select_only
+from backend.database.db_connector import get_connection_with_data, run_query, validate_select_only, lock_down_connection
 from backend.database.dataset_store import DatasetStore
 from backend.analytics.anomaly import AnomalyDetector
 from backend.analytics.statistics import VarianceAnalyzer
 from backend.analytics.forecasting import Forecaster
 from backend.reports.generator import ReportGenerator, cleanup_old_reports
 from backend.auth.dependencies import require_auth, require_premium
+from backend.utils import payments
 from backend.utils.rate_limiter import (
     rate_limit,
     llm_limiter,
@@ -40,9 +47,9 @@ from backend.auth.account_deletion import purge_report_files, send_deletion_emai
 from fastapi.responses import Response
 from backend.visualization.chart_image import ChartImageExporter
 from backend.visualization.charts import ChartEngine, TIME_GRANULARITY_LEVELS
-from backend.auth.user_store import UserStore
+from backend.auth.user_store import UserStore, is_valid_email
 
-from backend.scheduling.schedule_store import ScheduleStore
+from backend.scheduling.schedule_store import ScheduleStore, validate_webhook_url
 from backend.scheduling.runner import execute_schedule, failure_reason
 
 from backend.auth.verification import send_verification_email, email_failure_message
@@ -54,9 +61,111 @@ from backend.utils.ai_gate import (
 
 router = APIRouter()
 
-MAX_UPLOAD_SIZE_MB = 500
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# Default is 100 MB so 512 MB RAM hosts do not crash. Override with MAX_UPLOAD_SIZE_MB in .env.
+MAX_UPLOAD_SIZE_MB = _env_int("MAX_UPLOAD_SIZE_MB", 100)
 MAX_NOTE_LENGTH = 1000
 VALID_AGGREGATIONS = {"sum", "mean", "median", "count", "min", "max"}
+
+
+@router.get("/system/status")
+def system_status():
+    """
+    Public capability check. The frontend uses sandbox_available to show a
+    clear demo-mode notice on deployments where Docker is not available
+    (e.g. free hosting), instead of users hitting errors mid-analysis.
+    """
+    return {"sandbox_available": is_sandbox_available()}
+
+
+# ---------- Payments (Razorpay) ----------
+
+class PaymentVerifyRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@router.get("/payments/status")
+def payments_status(current_user: str = Depends(require_auth)):
+    """Tells the frontend whether self-serve upgrade is enabled, and the price."""
+    return {
+        "enabled": payments.is_configured(),
+        "public_key": payments.get_public_key(),
+        "price_inr": payments.premium_price_inr(),
+    }
+
+
+@router.post("/payments/create-order")
+def payments_create_order(current_user: str = Depends(require_auth), _rl=Depends(rate_limit(login_limiter))):
+    user = UserStore.get_user(current_user)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if UserStore.get_plan(current_user) == "premium":
+        return {"already_premium": True}
+    try:
+        order = payments.create_order(current_user, user["email"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail="Payment gateway is not responding. Please try again.") from e
+    return {"already_premium": False, **order}
+
+
+@router.post("/payments/verify")
+def payments_verify(request: PaymentVerifyRequest, current_user: str = Depends(require_auth), _rl=Depends(rate_limit(login_limiter))):
+    if not payments.is_configured():
+        raise HTTPException(status_code=503, detail="Payments are not configured on the server.")
+    if not payments.verify_checkout_signature(
+        request.razorpay_order_id, request.razorpay_payment_id, request.razorpay_signature
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Payment verification failed. No plan change was made; contact support if money was deducted.",
+        )
+    if not payments.order_is_paid(request.razorpay_order_id, current_user):
+        raise HTTPException(
+            status_code=400,
+            detail="The payment is not confirmed yet. If money was deducted it will auto-refund; please try again.",
+        )
+    if not payments.upgrade_to_premium(
+        current_user, request.razorpay_order_id, request.razorpay_payment_id
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail="Payment verified but the plan could not be updated. Contact support with your payment id.",
+        )
+    return {"message": "Payment successful. Your account is now Premium."}
+
+
+@router.post("/payments/webhook")
+async def payments_webhook(request: Request):
+    """
+    Razorpay server-to-server webhook (payment.captured / order.paid). Upgrades the user even if their
+    browser closed mid-checkout. Authenticated only by the HMAC signature of the raw body.
+    """
+    if not payments.is_configured() or not payments.webhook_secret():
+        raise HTTPException(status_code=503, detail="Payment webhook is not configured on the server.")
+
+    raw_body = await request.body()
+    if len(raw_body) > 1_000_000:
+        raise HTTPException(status_code=413, detail="Webhook payload too large.")
+
+    signature = request.headers.get("x-razorpay-signature", "")
+    if not payments.verify_webhook_signature(raw_body, signature):
+        raise HTTPException(status_code=400, detail="Invalid webhook signature.")
+
+    outcome = await run_in_threadpool(payments.handle_webhook_event, raw_body)
+    if outcome == "failed":
+        # A non-2xx answer makes Razorpay retry the webhook later.
+        raise HTTPException(status_code=500, detail="The plan could not be updated. The gateway will retry.")
+    return {"status": outcome}
 
 
 def to_json_safe_records(df: pd.DataFrame, n: int = None) -> list:
@@ -150,6 +259,122 @@ async def upload_dataset(file: UploadFile = File(...), current_user: str = Depen
     safe_filename = _safe_upload_filename(file.filename)
 
     # Heavy blocking work runs in the thread pool so a large upload does not freeze other requests.
+    dataset_id = await run_in_threadpool(DatasetStore.create, df, safe_filename, current_user)
+    profile = await run_in_threadpool(DataProfiler.profile, df)
+
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=500, detail="Dataset profile could not be generated.")
+
+    try:
+        preview = to_json_safe_records(df, 10)
+    except Exception:
+        preview = []
+
+    if not isinstance(preview, list):
+        preview = []
+
+    return {
+        "dataset_id": dataset_id,
+        "filename": safe_filename,
+        "profile": profile,
+        "preview": preview,
+    }
+
+
+# ---------- Upload from URL (public data connector) ----------
+
+class UrlUploadRequest(BaseModel):
+    url: str
+    filename: str = ""
+
+
+_URL_DOWNLOAD_TIMEOUT_SECONDS = 30
+_URL_ALLOWED_EXTENSIONS = (".csv", ".xlsx", ".xls", ".json")
+
+
+@router.post("/dataset/upload-url")
+async def upload_dataset_from_url(
+    request: UrlUploadRequest,
+    current_user: str = Depends(require_auth),
+    _rl=Depends(rate_limit(upload_limiter)),
+):
+    """
+    Downloads a dataset from a public https URL and stores it exactly like a
+    normal upload. The URL is SSRF-validated (public https only), the download
+    is size-capped, and only .csv, .xlsx, and .json are accepted.
+    """
+    try:
+        safe_url = validate_webhook_url(request.url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    parsed = urlparse(safe_url)
+    if not parsed.path.lower().endswith(_URL_ALLOWED_EXTENSIONS):
+        raise HTTPException(
+            status_code=400,
+            detail="The URL must point to a .csv, .xlsx, or .json file.",
+        )
+
+    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    try:
+        current_url = safe_url
+        chunks = []
+        for _hop in range(4):
+            with requests.get(
+                current_url, stream=True, timeout=_URL_DOWNLOAD_TIMEOUT_SECONDS, allow_redirects=False
+            ) as resp:
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location")
+                    if not location:
+                        raise HTTPException(status_code=400, detail="The URL redirected without a destination.")
+                    # Every redirect target is SSRF-validated (public https only) before it is followed.
+                    current_url = validate_webhook_url(urljoin(current_url, location))
+                    continue
+                if resp.status_code >= 400:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"The server returned HTTP {resp.status_code} for that URL.",
+                    )
+                chunks = []
+                total = 0
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"The file at that URL is larger than the {MAX_UPLOAD_SIZE_MB}MB limit.",
+                        )
+                    chunks.append(chunk)
+                break
+        else:
+            raise HTTPException(status_code=400, detail="The URL redirected too many times.")
+        content = b"".join(chunks)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="The file could not be downloaded from that URL.") from e
+
+    if not content:
+        raise HTTPException(status_code=400, detail="The file at that URL is empty.")
+
+    raw_name = request.filename.strip() or parsed.path.rsplit("/", 1)[-1] or "dataset.csv"
+    safe_filename = _safe_upload_filename(raw_name)
+
+    try:
+        lowered = safe_filename.lower()
+        if lowered.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(content))
+        elif lowered.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(io.BytesIO(content))
+        else:
+            df = pd.read_json(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="The downloaded file could not be parsed as a dataset.") from e
+
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise HTTPException(status_code=400, detail="The downloaded file did not contain any usable rows.")
+
+    # Heavy blocking work runs in the thread pool, same as a normal upload.
     dataset_id = await run_in_threadpool(DatasetStore.create, df, safe_filename, current_user)
     profile = await run_in_threadpool(DataProfiler.profile, df)
 
@@ -1552,6 +1777,7 @@ def _execute_safe_select_sql(df: pd.DataFrame, raw_sql: str) -> Tuple[pd.DataFra
     conn = sqlite3.connect(":memory:")
     try:
         df.to_sql("data", conn, index=False, if_exists="replace")
+        lock_down_connection(conn)
         deadline = time.monotonic() + timeout_seconds
         conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10000)
         cursor = conn.execute(clean_sql)
@@ -1941,6 +2167,16 @@ def analyze_dataset(dataset_id: str, request: AnalysisRequest, current_user: str
 
     try:
         result = PythonAgent.execute_code(code, df)
+    except SandboxUnavailableError:
+        # Permanent deployment limitation (no Docker on this host): a clean 503,
+        # and the generated code is not shown to the user.
+        refund_quota(current_user)
+        raise HTTPException(
+            status_code=503,
+            detail="Python code analysis is not available on this deployment because the "
+                   "secure code sandbox is not configured here. SQL queries, insights, "
+                   "cleaning, charts and reports keep working.",
+        )
     except (ValueError, RuntimeError) as e:
         refund_quota(current_user)
         raise HTTPException(status_code=400, detail=f"{e} | Generated code: {code}")
@@ -4586,6 +4822,79 @@ def get_account(current_user: str = Depends(require_auth)):
     }
 
 
+@router.get("/account/export-data")
+def export_account_data(current_user: str = Depends(require_auth), _rl=Depends(rate_limit(export_limiter))):
+    """Data portability: a JSON download of the account profile, dataset metadata, saved analyses metadata and schedules."""
+    import json
+
+    try:
+        user = UserStore.get_user(current_user)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Account data could not be exported.") from e
+
+    if not isinstance(user, dict) or not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        datasets = DatasetStore.list_all(current_user, limit=None)
+    except Exception:
+        datasets = []
+    if not isinstance(datasets, list):
+        datasets = []
+
+    datasets_export = []
+    for dataset in datasets:
+        if not isinstance(dataset, dict) or not dataset.get("dataset_id"):
+            continue
+        dataset_id = dataset["dataset_id"]
+        try:
+            analyses = DatasetStore.list_analyses(dataset_id, current_user)
+        except Exception:
+            analyses = []
+        datasets_export.append(
+            {
+                "dataset_id": dataset_id,
+                "filename": dataset.get("filename"),
+                "uploaded_at": dataset.get("uploaded_at"),
+                "saved_analyses": analyses if isinstance(analyses, list) else [],
+            }
+        )
+
+    try:
+        schedules = ScheduleStore.list_for_user(current_user)
+    except Exception:
+        schedules = []
+    if not isinstance(schedules, list):
+        schedules = []
+
+    try:
+        branding = UserStore.get_branding(current_user)
+    except Exception:
+        branding = {}
+    if not isinstance(branding, dict):
+        branding = {}
+
+    payload = _make_json_safe(
+        {
+            "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "account": user,
+            "branding": {
+                "has_logo": branding.get("logo_bytes") is not None,
+                "accent_color": branding.get("accent_color"),
+            },
+            "datasets": datasets_export,
+            "scheduled_exports": schedules,
+            "note": "Dataset contents are not included here. Download each dataset from the app (CSV/JSON report).",
+        }
+    )
+
+    return Response(
+        content=json.dumps(payload, indent=2, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=my-account-data.json"},
+    )
+
+
 @router.put("/account/profile")
 def update_profile(request: ProfileUpdateRequest, current_user: str = Depends(require_auth)):
     full_name = str(request.full_name or "").strip()[:100]
@@ -4635,7 +4944,7 @@ def change_email(
     new_email = str(request.new_email or "").strip().lower()
     password = str(request.password or "")
 
-    if not new_email or "@" not in new_email or "." not in new_email:
+    if not is_valid_email(new_email):
         raise HTTPException(status_code=400, detail="Please enter a valid email address.")
 
     try:

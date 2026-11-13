@@ -2,6 +2,8 @@
 import { useState, useEffect } from "react";
 import api from "../api";
 import { errorDetail } from "../utils";
+import PremiumUpgrade from "./PremiumUpgrade";
+import { useLanguage } from "../i18n";
 
 function formatDate(value) {
   if (!value) return "—";
@@ -41,6 +43,7 @@ function SettingsRow({ label, value, actionLabel, open, onToggle, message, child
 }
 
 function AccountPage({ onBack }) {
+  const { t } = useLanguage();
   const [account, setAccount] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [openRow, setOpenRow] = useState(null); // "profile" | "email" | "password" | "delete" | null
@@ -151,6 +154,24 @@ function AccountPage({ onBack }) {
     });
   };
 
+  const downloadAccountData = () =>
+    run(
+      "export",
+      async () => {
+        const res = await api.get("/account/export-data", { responseType: "blob" });
+        const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/json" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "my-account-data.json";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+        return "Your account data was downloaded.";
+      },
+      { close: false }
+    );
+
   const sendDeletionEmail = () =>
     run("delete", async () => (await api.post("/account/delete/request")).data.message, { close: false });
 
@@ -167,46 +188,59 @@ function AccountPage({ onBack }) {
   return (
     <div className="account-page">
       <div className="account-page-header">
-        <h2>Your Account</h2>
-        <button className="logout-button" onClick={onBack}>← Back to dashboard</button>
+        <h2>{t("accountTitle")}</h2>
+        <button className="logout-button" onClick={onBack}>{t("backToDashboard")}</button>
       </div>
 
       <section className="account-section">
-        <h3>Overview</h3>
+        <h3>{t("overviewSection")}</h3>
         <div className="account-details">
           <div className="account-detail">
-            <span className="account-detail-label">Plan</span>
+            <span className="account-detail-label">{t("planLabel")}</span>
             <span className={`status-badge ${isPremium ? "status-ok" : ""}`}>
-              {isPremium ? "Premium ⭐" : "Free"}
+              {isPremium ? "Premium ⭐" : t("freePlan")}
             </span>
           </div>
           <div className="account-detail">
-            <span className="account-detail-label">Member since</span>
+            <span className="account-detail-label">{t("memberSince")}</span>
             <span className="account-detail-value">{formatDate(account.created_at)}</span>
           </div>
           <div className="account-detail">
-            <span className="account-detail-label">Datasets</span>
+            <span className="account-detail-label">{t("datasetsLabel")}</span>
             <span className="account-detail-value">{account.datasets_count}</span>
           </div>
           <div className="account-detail">
-            <span className="account-detail-label">AI requests today</span>
+            <span className="account-detail-label">{t("aiRequestsToday")}</span>
             <span className="account-detail-value">
               {account.ai_usage.used} / {account.ai_usage.limit}
             </span>
           </div>
           <div className="account-detail">
-            <span className="account-detail-label">Terms accepted on</span>
+            <span className="account-detail-label">{t("termsAcceptedOn")}</span>
             <span className="account-detail-value">{formatDate(account.terms_accepted_at)}</span>
           </div>
         </div>
       </section>
 
+      <PremiumUpgrade isPremium={isPremium} onUpgraded={loadAccount} />
+
       <section className="account-section">
-        <h3>Profile</h3>
+        <h3>Your data</h3>
+        <p className="subtitle">
+          Download a copy of your account details, dataset list, saved analyses and schedules.
+        </p>
+        <button style={{ marginLeft: 0 }} onClick={downloadAccountData} disabled={busy === "export"}>
+          {busy === "export" ? "Preparing..." : "Download my account data (JSON)"}
+        </button>
+        <Message message={messages.export} />
+      </section>
+
+      <section className="account-section">
+        <h3>{t("profileSection")}</h3>
         <SettingsRow
-          label="Name &amp; organization"
-          value={profileSummary || <span className="settings-muted">Not set</span>}
-          actionLabel="Edit"
+          label={t("nameOrgLabel")}
+          value={profileSummary || <span className="settings-muted">{t("notSet")}</span>}
+          actionLabel={t("edit")}
           open={openRow === "profile"}
           onToggle={() => toggleRow("profile")}
           message={messages.profile}
@@ -217,7 +251,7 @@ function AccountPage({ onBack }) {
             <label htmlFor="organization">Organization / college</label>
             <input id="organization" type="text" maxLength={100} value={organization} onChange={(e) => setOrganization(e.target.value)} />
             <button type="submit" disabled={busy === "profile"}>
-              {busy === "profile" ? "Saving..." : "Save"}
+              {busy === "profile" ? t("saving") : t("save")}
             </button>
           </form>
         </SettingsRow>
@@ -307,6 +341,15 @@ function AccountPage({ onBack }) {
               ? "Resend confirmation email"
               : "Send confirmation email"}
           </button>
+          {messages.delete?.type === "error" && (
+            <p className="subtitle" style={{ marginTop: 10, marginBottom: 0, fontSize: 12 }}>
+              If confirmation emails are not available on this server, email{" "}
+              <a href="mailto:vikashkumar47023@gmail.com?subject=Account%20deletion%20request">
+                vikashkumar47023@gmail.com
+              </a>{" "}
+              from your account address to request deletion.
+            </p>
+          )}
         </SettingsRow>
       </section>
     </div>

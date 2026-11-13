@@ -5,13 +5,25 @@ import hmac
 import hashlib
 import os
 import binascii
+import re
 from typing import Optional, Dict, Any
 
-from backend.database.dataset_store import DB_PATH
+from backend.database.dataset_store import DB_PATH, configure_sqlite_connection
+from backend.utils.email_sender import email_verification_required
+
+_EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
+def is_valid_email(email) -> bool:
+    """Basic RFC-like email shape check, at most 254 characters."""
+    if not isinstance(email, str):
+        return False
+    candidate = email.strip()
+    return 0 < len(candidate) <= 254 and bool(_EMAIL_PATTERN.match(candidate))
 
 
 def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = configure_sqlite_connection(sqlite3.connect(DB_PATH, timeout=30))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -93,8 +105,8 @@ class UserStore:
             password_hash = _hash_password(password)
             accepted_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat() if terms_accepted else None
             conn.execute(
-                "INSERT INTO users (id, email, password_hash, terms_accepted_at, email_verified) VALUES (?, ?, ?, ?, 0)",
-                (user_id, email, password_hash, accepted_at),
+                "INSERT INTO users (id, email, password_hash, terms_accepted_at, email_verified) VALUES (?, ?, ?, ?, ?)",
+                (user_id, email, password_hash, accepted_at, 0 if email_verification_required() else 1),
             )
             conn.commit()
             return user_id
@@ -133,7 +145,7 @@ class UserStore:
                 "email": row[1],
                 "plan": row[2] or "free",
                 "created_at": row[3],
-                "email_verified": row[4] != 0,
+                "email_verified": row[4] != 0 or not email_verification_required(),
                 "full_name": row[5] or "",
                 "organization": row[6] or "",
                 "terms_accepted_at": row[7],
@@ -417,8 +429,8 @@ class UserStore:
                 raise ValueError("An account with this email already exists.")
 
             conn.execute(
-                "UPDATE users SET email = ?, email_verified = 0 WHERE id = ?",
-                (new_email, user_id),
+                "UPDATE users SET email = ?, email_verified = ? WHERE id = ?",
+                (new_email, 0 if email_verification_required() else 1, user_id),
             )
             # Invalidate any verification link issued for the previous address.
             try:

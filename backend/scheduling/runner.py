@@ -4,6 +4,7 @@ import atexit
 import datetime
 import os
 import sqlite3
+import time
 import uuid
 import requests
 
@@ -133,6 +134,39 @@ def failure_reason(schedule: dict) -> str:
     if schedule.get("destination_type") == "email":
         return (get_last_error() or "Report generation or email delivery failed.")[:300]
     return "Report generation or webhook delivery failed. Check the dataset and the webhook address."
+
+
+# Failure notifications are throttled per schedule, so a broken schedule
+# cannot spam the owner's inbox on every retry (checks run every 10 minutes).
+_FAILURE_NOTIFY_MIN_GAP_SECONDS = 24 * 3600
+_last_failure_notified_at: dict = {}
+
+
+def _notify_owner_of_failure(schedule: dict, reason: str) -> None:
+    """Emails the schedule owner (if verified) that an automated export failed. Throttled to once per day per schedule."""
+    try:
+        schedule_id = str(schedule.get("schedule_id") or "")
+        now = time.time()
+        last = _last_failure_notified_at.get(schedule_id, 0)
+        if now - last < _FAILURE_NOTIFY_MIN_GAP_SECONDS:
+            return
+        owner = UserStore.get_user(schedule.get("user_id"))
+        if not owner or not owner.get("email_verified"):
+            return
+        safe_reason = str(reason or "unknown error").replace("<", "&lt;").replace(">", "&gt;")
+        sent = send_email(
+            to_email=owner["email"],
+            subject="Your scheduled export failed",
+            body_html=f"""
+                <p>An automated scheduled export of dataset <b>{schedule.get('dataset_id')}</b> failed.</p>
+                <p>Reason: {safe_reason}</p>
+                <p>The schedule will keep retrying automatically. Open the Reports section to check or fix the schedule.</p>
+            """,
+        )
+        if sent:
+            _last_failure_notified_at[schedule_id] = now
+    except Exception as e:
+        print(f"[Scheduler] Failure notification could not be sent: {e}")
 
 
 def execute_schedule(schedule: dict) -> bool:
@@ -299,13 +333,24 @@ async def scheduler_loop():
                 print(f"[Scheduler] Running due schedule {schedule['schedule_id']}")
                 # Blocking work (report generation, AI, SMTP, webhooks) runs off the event loop.
                 success = await asyncio.to_thread(execute_schedule, schedule)
-                await asyncio.to_thread(
-                    ScheduleStore.mark_run,
-                    schedule["schedule_id"],
-                    schedule["frequency"],
-                    success,
-                    None if success else failure_reason(schedule),
-                )
+                if success:
+                    await asyncio.to_thread(
+                        ScheduleStore.mark_run,
+                        schedule["schedule_id"],
+                        schedule["frequency"],
+                        True,
+                        None,
+                    )
+                else:
+                    reason = failure_reason(schedule)
+                    await asyncio.to_thread(
+                        ScheduleStore.mark_run,
+                        schedule["schedule_id"],
+                        schedule["frequency"],
+                        False,
+                        reason,
+                    )
+                    await asyncio.to_thread(_notify_owner_of_failure, schedule, reason)
                 print(f"[Scheduler] Schedule {schedule['schedule_id']} {'succeeded' if success else 'failed'}")
         except Exception as e:
             print(f"[Scheduler] Loop error: {e}")

@@ -3,6 +3,7 @@ import os
 import subprocess
 import json
 import threading
+import time
 import uuid
 from typing import Any
 import pandas as pd
@@ -21,6 +22,46 @@ def _int_env(name: str, default: int) -> int:
 _SLOTS = threading.BoundedSemaphore(_int_env("SANDBOX_MAX_CONCURRENT", 4))
 _QUEUE_WAIT_SECONDS = _int_env("SANDBOX_QUEUE_WAIT_SECONDS", 15)
 
+_SANDBOX_CACHE_TTL_SECONDS = 60
+_SANDBOX_CACHE = {"checked_at": None, "available": False}
+_SANDBOX_CACHE_LOCK = threading.Lock()
+
+
+def is_production() -> bool:
+    return (os.environ.get("ENV") or "").strip().lower() == "production"
+
+
+def unsafe_local_exec_allowed() -> bool:
+    """Unsandboxed local execution is a development-only opt-in and is never honored in production."""
+    return os.environ.get("ALLOW_UNSAFE_LOCAL_EXEC") == "1" and not is_production()
+
+
+def is_sandbox_available() -> bool:
+    """
+    True when generated code can run: either the development-only local fallback is allowed,
+    or the Docker daemon answers `docker info` within 3 seconds. The result is cached for 60 seconds.
+    """
+    if unsafe_local_exec_allowed():
+        return True
+
+    now = time.monotonic()
+    with _SANDBOX_CACHE_LOCK:
+        checked_at = _SANDBOX_CACHE["checked_at"]
+        if checked_at is not None and now - checked_at < _SANDBOX_CACHE_TTL_SECONDS:
+            return bool(_SANDBOX_CACHE["available"])
+
+    available = False
+    try:
+        result = subprocess.run(["docker", "info"], capture_output=True, timeout=3)
+        available = result.returncode == 0
+    except Exception:
+        available = False
+
+    with _SANDBOX_CACHE_LOCK:
+        _SANDBOX_CACHE["checked_at"] = time.monotonic()
+        _SANDBOX_CACHE["available"] = available
+    return available
+
 
 def _kill_container(name: str) -> None:
     """Stops a timed-out container; killing the docker CLI process alone does not stop the container."""
@@ -31,6 +72,13 @@ def _kill_container(name: str) -> None:
 
 
 class DockerSandboxError(Exception):
+    pass
+
+
+class DockerUnavailableError(DockerSandboxError):
+    """Docker itself is missing or unreachable on this host. This is a permanent
+    condition for the deployment (e.g. free hosting without docker.sock), unlike
+    a busy or timed-out sandbox, which is transient."""
     pass
 
 
@@ -81,7 +129,7 @@ def run_code_in_sandbox(code: str, df: pd.DataFrame, timeout_seconds: int = 30) 
             _kill_container(container_name)
             raise DockerSandboxError(f"Code execution timed out after {timeout_seconds} seconds.")
         except (FileNotFoundError, OSError) as e:
-            raise DockerSandboxError(f"Docker is not available on this server: {e}")
+            raise DockerUnavailableError(f"Docker is not available on this server: {e}")
     finally:
         _SLOTS.release()
 

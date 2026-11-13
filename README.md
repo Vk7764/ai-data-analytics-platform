@@ -25,6 +25,10 @@ AI-assisted data analytics platform for dataset profiling, cleaning previews, sa
 
 ## Local development
 
+First, copy `.env.example` to `.env` and fill in your values. At minimum set
+`APP_SECRET_KEY`, `FRONTEND_URL`, `APP_CORS_ORIGINS`, your AI provider keys,
+and the Gmail credentials for email features.
+
 Run backend and frontend in separate terminals from the project root.
 
 Backend:

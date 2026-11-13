@@ -1,4 +1,5 @@
 # backend/agents/python_agent.py
+import logging
 import os
 import re
 import math
@@ -7,6 +8,9 @@ import numpy as np
 from typing import Any, Dict
 
 from backend.agents.sql_agent import SQLAgent, _redact_pii_for_prompt  # reuse the same LLM fallback chain and PII helper
+from backend.sandbox.docker_runner import is_sandbox_available, unsafe_local_exec_allowed
+
+logger = logging.getLogger("app")
 
 
 # Functions/modules the generated code is allowed to use
@@ -54,6 +58,13 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+class SandboxUnavailableError(RuntimeError):
+    """Docker (the code sandbox) is not available on this deployment at all,
+    e.g. free hosting without Docker. This is not the user's fault and will
+    not fix itself on retry."""
+    pass
+
+
 class PythonAgent:
     """
     Converts a natural language analysis question into pandas code,
@@ -98,13 +109,20 @@ Python code:"""
 
     @staticmethod
     def generate_code(question: str, schema_info: str) -> str:
+        # Checked BEFORE any LLM call so no AI quota or provider time is spent when code cannot run.
+        if not is_sandbox_available():
+            raise SandboxUnavailableError(
+                "Python code analysis is not available on this deployment because the "
+                "secure code sandbox (Docker) is not available here. SQL queries, "
+                "insights, cleaning, charts and reports keep working."
+            )
         prompt = PythonAgent.build_prompt(question, schema_info)
         # Reuse the same multi-provider fallback chain used by SQLAgent
         providers = SQLAgent.get_provider_chain()
         for provider_fn, name in providers:
             raw_output = provider_fn(prompt)
             if raw_output:
-                print(f"[PythonAgent] Code generated using '{name}' provider.")
+                logger.info(f"[PythonAgent] Code generated using '{name}' provider.")
                 return PythonAgent._extract_code(raw_output)
 
         raise RuntimeError("All LLM providers failed. Check if Ollama is running.")
@@ -124,30 +142,45 @@ Python code:"""
         PythonAgent._validate_code(code)
 
         # The sandbox is mandatory. Unsandboxed local execution requires an explicit opt-in (development only).
-        strict = os.environ.get("ALLOW_UNSAFE_LOCAL_EXEC") != "1"
+        # ALLOW_UNSAFE_LOCAL_EXEC is ignored when ENV=production.
+        strict = not unsafe_local_exec_allowed()
 
         try:
-            from backend.sandbox.docker_runner import run_code_in_sandbox, DockerSandboxError
+            from backend.sandbox.docker_runner import (
+                run_code_in_sandbox,
+                DockerSandboxError,
+                DockerUnavailableError,
+            )
         except ImportError as e:
             if strict:
-                raise RuntimeError(
-                    "The Python Analysis feature is temporarily unavailable "
-                    "(sandbox not configured). Please try again later or contact support."
+                raise SandboxUnavailableError(
+                    "Python code analysis is not available on this deployment "
+                    "(sandbox not configured). All other features keep working."
                 )
-            print(f"[PythonAgent] Docker sandbox unavailable ({e}); falling back to restricted local execution.")
+            logger.warning(f"[PythonAgent] Docker sandbox unavailable ({e}); falling back to restricted local execution.")
             return PythonAgent._execute_code_local(code, df)
 
         try:
             return _json_safe(run_code_in_sandbox(code, df))
+        except DockerUnavailableError as e:
+            if strict:
+                logger.warning(f"[PythonAgent] Docker sandbox not available on this host: {e}")
+                raise SandboxUnavailableError(
+                    "Python code analysis is not available on this deployment because the "
+                    "secure code sandbox (Docker) is not available here. SQL queries, "
+                    "insights, cleaning, charts and reports keep working."
+                )
+            logger.warning(f"[PythonAgent] Docker sandbox unavailable ({e}); falling back to restricted local execution.")
+            return PythonAgent._execute_code_local(code, df)
         except DockerSandboxError as e:
             if strict:
-                print(f"[PythonAgent] Docker sandbox failed: {e}")
+                logger.warning(f"[PythonAgent] Docker sandbox failed: {e}")
                 raise RuntimeError(
                     "The Python Analysis feature is temporarily unavailable "
                     "(sandbox not running). Please try again in a moment, or ask "
                     "your question as a direct data query instead."
                 )
-            print(f"[PythonAgent] Docker sandbox unavailable ({e}); falling back to restricted local execution.")
+            logger.warning(f"[PythonAgent] Docker sandbox unavailable ({e}); falling back to restricted local execution.")
             return PythonAgent._execute_code_local(code, df)
     @staticmethod
     def _execute_code_local(code: str, df: pd.DataFrame) -> Any:

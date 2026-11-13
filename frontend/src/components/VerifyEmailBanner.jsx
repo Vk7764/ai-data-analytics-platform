@@ -1,8 +1,10 @@
 // frontend/src/components/VerifyEmailBanner.jsx
 import { useState, useEffect } from "react";
 import api from "../api";
+import { useLanguage } from "../i18n";
 
 function VerifyEmailBanner() {
+  const { t } = useLanguage();
   // Assume verified until the server says otherwise, so the banner never flashes for verified users.
   const [verified, setVerified] = useState(true);
   const [sending, setSending] = useState(false);
@@ -62,11 +64,11 @@ function VerifyEmailBanner() {
   return (
     <div className="verify-banner">
       <span>
-        Please verify your email to use AI features (insights and chat). Everything else works already. Can't find the email? Check your spam folder.
+        {t("verifyBanner")}
         {message && <strong> {message}</strong>}
       </span>
       <button onClick={handleResend} disabled={sending}>
-        {sending ? "Sending..." : "Resend email"}
+        {sending ? t("sending") : t("resendEmail")}
       </button>
     </div>
   );

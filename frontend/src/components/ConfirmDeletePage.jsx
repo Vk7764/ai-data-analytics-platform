@@ -1,7 +1,6 @@
 // frontend/src/components/ConfirmDeletePage.jsx
 import { useState } from "react";
-import axios from "axios";
-import { BASE_URL } from "../api";
+import api from "../api";
 import { errorDetail } from "../utils";
 
 function ConfirmDeletePage({ token }) {
@@ -18,7 +17,7 @@ function ConfirmDeletePage({ token }) {
     setLoading(true);
     setError(null);
     try {
-      await axios.post(`${BASE_URL}/api/account/delete/confirm`, { token, password });
+      await api.post("/account/delete/confirm", { token, password });
       localStorage.removeItem("access_token");
       setDone(true);
     } catch (err) {

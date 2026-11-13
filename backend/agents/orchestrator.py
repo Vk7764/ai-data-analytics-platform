@@ -1,5 +1,6 @@
 # backend/agents/orchestrator.py
 import json
+import logging
 import re
 import sqlite3
 import pandas as pd
@@ -7,15 +8,18 @@ from typing import Dict, Any, List
 
 from backend.agents.sql_agent import SQLAgent, _redact_pii_for_prompt
 from backend.agents.python_agent import PythonAgent
+from backend.sandbox.docker_runner import is_sandbox_available
 from backend.agents.insight_agent import InsightAgent
 from backend.data.profiler import DataProfiler
 from backend.visualization.charts import ChartEngine
 from backend.database.db_connector import get_connection_with_data, run_query, validate_select_only
-from backend.database.dataset_store import DB_PATH
+from backend.database.dataset_store import DB_PATH, configure_sqlite_connection
+
+logger = logging.getLogger("app")
 
 
 def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = configure_sqlite_connection(sqlite3.connect(DB_PATH, timeout=30))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,6 +38,7 @@ def _get_connection() -> sqlite3.Connection:
 
 
 HISTORY_MAX_ROWS = 50
+HISTORY_MAX_MESSAGES = 100  # newest chat messages kept per dataset
 HISTORY_MAX_CHART_POINTS = 200
 HISTORY_MAX_TEXT_CHARS = 5000
 HISTORY_MAX_RESULT_CHARS = 100_000
@@ -138,6 +143,11 @@ class Orchestrator:
                 "INSERT INTO chat_history (dataset_id, role, content, action, result_json) VALUES (?, ?, ?, ?, ?)",
                 (dataset_id, role, content, action, result_json),
             )
+            conn.execute(
+                "DELETE FROM chat_history WHERE dataset_id = ? AND id NOT IN "
+                "(SELECT id FROM chat_history WHERE dataset_id = ? ORDER BY id DESC LIMIT ?)",
+                (dataset_id, dataset_id, HISTORY_MAX_MESSAGES),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -194,7 +204,10 @@ New user message: {_redact_pii_for_prompt(str(message))}
 Return ONLY a JSON object in this exact format, nothing else:
 {{"action": "sql", "resolved_question": "..."}}"""
 
-        providers = SQLAgent.get_provider_chain()
+        try:
+            providers = SQLAgent.get_provider_chain()
+        except RuntimeError:
+            return {"action": "insight", "resolved_question": message}
 
         for provider_fn, name in providers:
             raw_output = provider_fn(prompt)
@@ -205,10 +218,10 @@ Return ONLY a JSON object in this exact format, nothing else:
                     resolved_question = parsed.get("resolved_question", message)
                     if action not in ("sql", "python", "chart", "insight"):
                         action = "insight"
-                    print(f"[Orchestrator] Routed using '{name}' -> action='{action}'")
+                    logger.info(f"[Orchestrator] Routed using '{name}' -> action='{action}'")
                     return {"action": action, "resolved_question": resolved_question}
                 except Exception as e:
-                    print(f"[Orchestrator] Failed to parse routing JSON from {name}: {e}")
+                    logger.warning(f"[Orchestrator] Failed to parse routing JSON from {name}: {e}")
                     continue
 
         return {"action": "insight", "resolved_question": message}
@@ -225,6 +238,9 @@ Return ONLY a JSON object in this exact format, nothing else:
 
         routing = Orchestrator._route_message(message, schema_info, history_text)
         action = routing["action"]
+        # Hosts without a code sandbox (free PaaS) answer through SQL instead of failing.
+        if action == "python" and not is_sandbox_available():
+            action = "sql"
         resolved_question = routing["resolved_question"]
 
         result: Any = None

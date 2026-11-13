@@ -11,6 +11,28 @@ class DataProfiler:
 
     @staticmethod
     def profile(df: pd.DataFrame) -> Dict[str, Any]:
+        # Per-request memoization: profiling is deterministic for an unchanged frame,
+        # and many endpoints call it several times on the same DataFrame object.
+        # df.attrs is pandas' official metadata dict; it never modifies the data itself.
+        # A new request loads a fresh DataFrame from SQLite, so the cache is naturally fresh.
+        try:
+            cached = df.attrs.get("_data_profile_cache")
+            if isinstance(cached, dict):
+                return cached
+        except Exception:
+            pass
+
+        result = DataProfiler._compute_profile(df)
+
+        try:
+            df.attrs["_data_profile_cache"] = result
+        except Exception:
+            pass
+
+        return result
+
+    @staticmethod
+    def _compute_profile(df: pd.DataFrame) -> Dict[str, Any]:
         num_rows, num_cols = df.shape
 
         column_info = []

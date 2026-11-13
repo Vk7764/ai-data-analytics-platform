@@ -1,8 +1,10 @@
 // frontend/src/components/UsageBadge.jsx
 import { useState, useEffect } from "react";
 import api from "../api";
+import { useLanguage } from "../i18n";
 
 function UsageBadge() {
+  const { t } = useLanguage();
   const [usage, setUsage] = useState(null);
 
   useEffect(() => {
@@ -34,7 +36,7 @@ function UsageBadge() {
       className={`usage-badge ${nearLimit ? "usage-badge-warn" : ""}`}
       title="AI requests used today. Reset timing depends on deployment configuration."
     >
-      AI today: {used}/{limitText}
+      {t("aiToday")} {used}/{limitText}
     </span>
   );
 }

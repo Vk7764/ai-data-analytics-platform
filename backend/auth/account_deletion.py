@@ -6,7 +6,7 @@ import sqlite3
 import datetime
 from typing import Tuple
 
-from backend.database.dataset_store import DB_PATH, DatasetStore
+from backend.database.dataset_store import DB_PATH, DatasetStore, configure_sqlite_connection
 from backend.agents.orchestrator import Orchestrator
 from backend.utils.ai_gate import AICache
 from backend.reports.generator import ReportGenerator, OUTPUT_DIR
@@ -20,7 +20,7 @@ MAX_PASSWORD_ATTEMPTS = 5
 # ---------- Deletion confirmation links ----------
 
 def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = configure_sqlite_connection(sqlite3.connect(DB_PATH, timeout=30))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS account_deletion_tokens (
             token_hash TEXT PRIMARY KEY,
@@ -152,8 +152,10 @@ def delete_account(user_id: str) -> None:
     generated report files, schedules, branding, daily usage counters,
     login-related tokens, and finally the user record itself.
     """
-    for dataset in DatasetStore.list_all(user_id):
+    owned_dataset_ids = []
+    for dataset in DatasetStore.list_all(user_id, limit=None):
         dataset_id = dataset["dataset_id"]
+        owned_dataset_ids.append(dataset_id)
         Orchestrator.reset_conversation(dataset_id)
         AICache.delete_for_dataset(dataset_id)
         purge_report_files(dataset_id)
@@ -165,6 +167,8 @@ def delete_account(user_id: str) -> None:
         # its feature was never used, hence the OperationalError guard.
         for table, column in [
             ("scheduled_exports", "user_id"),
+            ("saved_analyses", "user_id"),
+            ("dataset_shares", "owner_user_id"),
             ("user_branding", "user_id"),
             ("ai_usage", "user_id"),
             ("password_reset_tokens", "user_id"),
@@ -174,6 +178,11 @@ def delete_account(user_id: str) -> None:
         ]:
             try:
                 conn.execute(f"DELETE FROM {table} WHERE {column} = ?", (user_id,))
+            except sqlite3.OperationalError:
+                pass
+        for orphan_dataset_id in owned_dataset_ids:
+            try:
+                conn.execute("DELETE FROM chat_history WHERE dataset_id = ?", (orphan_dataset_id,))
             except sqlite3.OperationalError:
                 pass
         conn.commit()

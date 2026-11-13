@@ -2,19 +2,23 @@
 import { useState, useEffect, useRef } from "react";
 
 import api from "../api";
+import { useLanguage } from "../i18n";
 
 // Matches the backend cap (MAX_UPLOAD_SIZE_MB in backend/api/routes.py).
-const MAX_UPLOAD_SIZE_MB = 500;
+const MAX_UPLOAD_SIZE_MB = Number(import.meta.env.VITE_MAX_UPLOAD_SIZE_MB) || 100;
 const LARGE_UPLOAD_WARNING_MB = 50;
 import { errorDetail } from "../utils";
 
 function UploadForm({ onUploadSuccess }) {
+  const { t } = useLanguage();
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
   const [error, setError] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [sizeWarning, setSizeWarning] = useState(null);
+  const [datasetUrl, setDatasetUrl] = useState("");
+  const [urlLoading, setUrlLoading] = useState(false);
   const abortRef = useRef(null);
 
   useEffect(() => {
@@ -124,12 +128,39 @@ function UploadForm({ onUploadSuccess }) {
     }
   };
 
+  const handleUrlUpload = async () => {
+    let url = datasetUrl.trim();
+    if (!url) {
+      setError("Please paste a dataset URL first.");
+      return;
+    }
+    // Google Sheets share links are converted to their direct CSV export URL.
+    const sheetsMatch = url.match(
+      /^https:\/\/docs\.google\.com\/spreadsheets\/d\/([^/?#]+)\/(?:edit|view)?.*?(?:[?&#]gid=(\d+))?/
+    );
+    if (sheetsMatch) {
+      const gid = sheetsMatch[2] || "0";
+      url = `https://docs.google.com/spreadsheets/d/${sheetsMatch[1]}/export?format=csv&gid=${gid}`;
+    }
+    setUrlLoading(true);
+    setError(null);
+    try {
+      const response = await api.post("/dataset/upload-url", { url });
+      setDatasetUrl("");
+      onUploadSuccess(response.data);
+    } catch (err) {
+      setError(errorDetail(err, "Could not load a dataset from that URL. For Google Sheets, make sure sharing is set to 'Anyone with the link'."));
+    } finally {
+      setUrlLoading(false);
+    }
+  };
+
   return (
     <div className="upload-card">
-      <h2>Upload a Dataset</h2>
-      <p className="subtitle">Supports .csv, .xlsx, .json, and .sql files</p>
+      <h2>{t("uploadTitle")}</h2>
+      <p className="subtitle">{t("uploadSupports")}</p>
       <p className="subtitle" style={{ fontSize: "12px" }}>
-        New here? Start with the sample dataset to see the profile, KPIs and insights right away. Then upload your own file.
+        {t("uploadNewHere")}
       </p>
 
       <input type="file" accept=".csv,.xlsx,.json,.sql" onChange={handleFileChange} />
@@ -141,7 +172,7 @@ function UploadForm({ onUploadSuccess }) {
       )}
 
       <button onClick={handleUpload} disabled={loading || demoLoading}>
-        {loading ? "Uploading..." : "Upload"}
+        {loading ? t("uploading") : t("uploadButton")}
       </button>
 
       {loading && (
@@ -183,13 +214,32 @@ function UploadForm({ onUploadSuccess }) {
         </div>
       )}
 
+      <div style={{ margin: "12px 0", borderTop: "1px solid var(--line, #e5e7eb)", paddingTop: "12px" }}>
+        <p className="subtitle" style={{ fontSize: "12px", marginBottom: "6px" }}>
+          {t("loadFromUrl")}
+        </p>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <input
+            type="url"
+            placeholder="https://example.com/data.csv"
+            value={datasetUrl}
+            onChange={(e) => setDatasetUrl(e.target.value)}
+            style={{ flex: 1 }}
+            disabled={urlLoading || loading || demoLoading}
+          />
+          <button onClick={handleUrlUpload} disabled={urlLoading || loading || demoLoading}>
+            {urlLoading ? t("loading") : t("load")}
+          </button>
+        </div>
+      </div>
+
       <button
         className="demo-button"
         onClick={handleTryDemo}
         disabled={demoLoading || loading}
         style={{ fontWeight: 600 }}
       >
-        {demoLoading ? "Loading sample..." : "Try with Sample Data"}
+        {demoLoading ? t("loadingSample") : t("trySample")}
       </button>
 
       {error && <p className="error-text">{error}</p>}

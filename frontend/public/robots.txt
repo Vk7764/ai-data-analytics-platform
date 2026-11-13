@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /shared/
+Disallow: /reset-password
+Disallow: /verify-email
+Disallow: /confirm-delete

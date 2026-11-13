@@ -1,5 +1,5 @@
 // frontend/src/App.jsx
-import { useState, useEffect, Component } from "react";
+import { useState, useEffect, Component, lazy, Suspense } from "react";
 
 class SectionErrorBoundary extends Component {
   constructor(props) {
@@ -41,20 +41,83 @@ import AccountPage from "./components/AccountPage";
 import UploadForm from "./components/UploadForm";
 import BrandingSettings from "./components/BrandingSettings";
 import CompareDatasets from "./components/CompareDatasets";
-import DataCleaning from "./components/DataCleaning";
-import AnalysisDashboard from "./components/AnalysisDashboard";
-import TimeSeriesExplorer from "./components/TimeSeriesExplorer";
-import CorrelationHeatmap from "./components/CorrelationHeatmap";
-import AnomalyView from "./components/AnomalyView";
-import RootCauseView from "./components/RootCauseView";
-import ForecastView from "./components/ForecastView";
-import ChatInterface from "./components/ChatInterface";
-import ReportDownload from "./components/ReportDownload";
-import ScheduledExports from "./components/ScheduledExports";
-import DataProfile from "./components/DataProfile";
+import SandboxNotice from "./components/SandboxNotice";
+import { useLanguage } from "./i18n";
+
+const DataCleaning = lazy(() => import("./components/DataCleaning"));
+const AnalysisDashboard = lazy(() => import("./components/AnalysisDashboard"));
+const TimeSeriesExplorer = lazy(() => import("./components/TimeSeriesExplorer"));
+const CorrelationHeatmap = lazy(() => import("./components/CorrelationHeatmap"));
+const AnomalyView = lazy(() => import("./components/AnomalyView"));
+const RootCauseView = lazy(() => import("./components/RootCauseView"));
+const ForecastView = lazy(() => import("./components/ForecastView"));
+const ChatInterface = lazy(() => import("./components/ChatInterface"));
+const ReportDownload = lazy(() => import("./components/ReportDownload"));
+const ScheduledExports = lazy(() => import("./components/ScheduledExports"));
+const DataProfile = lazy(() => import("./components/DataProfile"));
+
 import "./App.css";
 
+function LanguageToggle() {
+  const { lang, setLanguage } = useLanguage();
+  return (
+    <button className="logout-button" onClick={() => setLanguage(lang === "hi" ? "en" : "hi")}>
+      {lang === "hi" ? "English" : "हिंदी"}
+    </button>
+  );
+}
+
+function LazySection({ children, fallbackLabel = "Loading section..." }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="dashboard-card">
+          <p className="subtitle">{fallbackLabel}</p>
+        </div>
+      }
+    >
+      {children}
+    </Suspense>
+  );
+}
+
+function ServerWakingBanner() {
+  const [waking, setWaking] = useState(false);
+
+  useEffect(() => {
+    const handler = (e) => setWaking(Boolean(e?.detail?.waking));
+    window.addEventListener("server-waking", handler);
+    return () => window.removeEventListener("server-waking", handler);
+  }, []);
+
+  if (!waking) return null;
+
+  return (
+    <div
+      role="status"
+      style={{
+        position: "fixed",
+        bottom: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: 200,
+        background: "var(--amber-bg)",
+        border: "1px solid var(--amber)",
+        color: "var(--ink)",
+        borderRadius: 8,
+        padding: "10px 16px",
+        fontSize: 13,
+        maxWidth: "90vw",
+        boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
+      }}
+    >
+      Waking up the server (free tier may take ~30s on first load)...
+    </div>
+  );
+}
+
 function App() {
+  const { t } = useLanguage();
   // The ?token= value from emailed links (password reset, email verification,
   // account deletion). The page path decides which page is shown.
   const safeLocation =
@@ -79,12 +142,28 @@ function App() {
   const [page, setPage] = useState("dashboard"); // "dashboard" | "account"
   const [datasetData, setDatasetData] = useState(null);
   const [dataVersion, setDataVersion] = useState(0);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [, forceRender] = useState(0);
 
   useEffect(() => {
     const handlePopState = () => forceRender((n) => n + 1);
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  // A 401 from the backend means the login session expired or is invalid.
+  // Show the login screen with a clear message instead of a hard page reload.
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setIsLoggedIn(false);
+      setView("auth");
+      setAuthMode("login");
+      setDatasetData(null);
+      setPage("dashboard");
+      setSessionExpired(true);
+    };
+    window.addEventListener("auth-expired", handleAuthExpired);
+    return () => window.removeEventListener("auth-expired", handleAuthExpired);
   }, []);
 
   const handleLogout = () => {
@@ -165,13 +244,27 @@ function App() {
         />
       );
     }
-    return <LoginForm initialMode={authMode} onLoginSuccess={() => setIsLoggedIn(true)} />;
+    return (
+      <>
+        <ServerWakingBanner />
+        {sessionExpired && (
+          <p className="subtitle" style={{ textAlign: "center", marginTop: 16 }}>
+            {t("sessionExpired")}
+          </p>
+        )}
+        <LoginForm
+          initialMode={authMode}
+          onLoginSuccess={() => { setSessionExpired(false); setIsLoggedIn(true); }}
+        />
+      </>
+    );
   }
 
   // ---------- The app ----------
 
   return (
     <div className="app-container">
+      <ServerWakingBanner />
       <header className="app-header">
         <div className="app-header-left">
           <HistoryDrawer
@@ -185,14 +278,15 @@ function App() {
           <h1>AI Data Analytics Platform</h1>
         </div>
         <div className="app-header-right">
+          <LanguageToggle />
           <UsageBadge />
           <button
             className="logout-button"
             onClick={() => setPage(page === "account" ? "dashboard" : "account")}
           >
-            {page === "account" ? "Dashboard" : "Account"}
+            {page === "account" ? t("dashboard") : t("account")}
           </button>
-          <button className="logout-button" onClick={handleLogout}>Log Out</button>
+          <button className="logout-button" onClick={handleLogout}>{t("logout")}</button>
         </div>
       </header>
 
@@ -201,6 +295,7 @@ function App() {
       ) : (
         <main>
           <VerifyEmailBanner />
+          <SandboxNotice />
           <UploadForm onUploadSuccess={handleUploadSuccess} />
           <BrandingSettings />
           <CompareDatasets dataVersion={dataVersion} />
@@ -208,71 +303,91 @@ function App() {
           {datasetData && (
             <>
               <nav className="section-nav">
-                <a href="#section-cleaning">Cleaning</a>
-                <a href="#section-analysis">Analysis</a>
-                <a href="#section-timeseries">Time Series</a>
-                <a href="#section-correlation">Correlation</a>
-                <a href="#section-anomalies">Anomalies</a>
-                <a href="#section-rootcause">Root Cause</a>
-                <a href="#section-forecast">Forecast</a>
-                <a href="#section-chat">Chat</a>
-                <a href="#section-reports">Reports</a>
-                <a href="#section-overview">Overview &amp; Rows</a>
+                <a href="#section-cleaning">{t("navCleaning")}</a>
+                <a href="#section-analysis">{t("navAnalysis")}</a>
+                <a href="#section-timeseries">{t("navTimeSeries")}</a>
+                <a href="#section-correlation">{t("navCorrelation")}</a>
+                <a href="#section-anomalies">{t("navAnomalies")}</a>
+                <a href="#section-rootcause">{t("navRootCause")}</a>
+                <a href="#section-forecast">{t("navForecast")}</a>
+                <a href="#section-chat">{t("navChat")}</a>
+                <a href="#section-reports">{t("navReports")}</a>
+                <a href="#section-overview">{t("navOverview")}</a>
               </nav>
 
               <div id="section-cleaning">
                 <SectionErrorBoundary key={`clean-${datasetData.dataset_id}`}>
-                  <DataCleaning datasetId={datasetData.dataset_id} dataVersion={dataVersion} onCleaned={handleCleaned} />
+                  <LazySection fallbackLabel="Loading cleaning tools...">
+                    <DataCleaning datasetId={datasetData.dataset_id} dataVersion={dataVersion} onCleaned={handleCleaned} />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
               <div id="section-analysis">
                 <SectionErrorBoundary key={`analysis-${datasetData.dataset_id}`}>
-                  <AnalysisDashboard datasetId={datasetData.dataset_id} dataVersion={dataVersion} columns={datasetData.profile.columns} />
+                  <LazySection fallbackLabel="Loading analysis dashboard...">
+                    <AnalysisDashboard datasetId={datasetData.dataset_id} dataVersion={dataVersion} columns={datasetData.profile.columns} />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
               <div id="section-timeseries">
                 <SectionErrorBoundary key={`ts-${datasetData.dataset_id}`}>
-                  <TimeSeriesExplorer datasetId={datasetData.dataset_id} columns={datasetData.profile.columns} dataVersion={dataVersion} />
+                  <LazySection fallbackLabel="Loading time series explorer...">
+                    <TimeSeriesExplorer datasetId={datasetData.dataset_id} columns={datasetData.profile.columns} dataVersion={dataVersion} />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
               <div id="section-correlation">
                 <SectionErrorBoundary key={`corr-${datasetData.dataset_id}`}>
-                  <CorrelationHeatmap datasetId={datasetData.dataset_id} dataVersion={dataVersion} />
+                  <LazySection fallbackLabel="Loading correlation heatmap...">
+                    <CorrelationHeatmap datasetId={datasetData.dataset_id} dataVersion={dataVersion} />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
               <div id="section-anomalies">
                 <SectionErrorBoundary key={`anom-${datasetData.dataset_id}`}>
-                  <AnomalyView datasetId={datasetData.dataset_id} dataVersion={dataVersion} />
+                  <LazySection fallbackLabel="Loading anomaly detection...">
+                    <AnomalyView datasetId={datasetData.dataset_id} dataVersion={dataVersion} />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
               <div id="section-rootcause">
                 <SectionErrorBoundary key={`rc-${datasetData.dataset_id}`}>
-                  <RootCauseView datasetId={datasetData.dataset_id} columns={datasetData.profile.columns} dataVersion={dataVersion} />
+                  <LazySection fallbackLabel="Loading root cause analysis...">
+                    <RootCauseView datasetId={datasetData.dataset_id} columns={datasetData.profile.columns} dataVersion={dataVersion} />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
               <div id="section-forecast">
                 <SectionErrorBoundary key={`fc-${datasetData.dataset_id}`}>
-                  <ForecastView datasetId={datasetData.dataset_id} columns={datasetData.profile.columns} dataVersion={dataVersion} />
+                  <LazySection fallbackLabel="Loading forecast...">
+                    <ForecastView datasetId={datasetData.dataset_id} columns={datasetData.profile.columns} dataVersion={dataVersion} />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
               <div id="section-chat">
                 <SectionErrorBoundary key={`chat-${datasetData.dataset_id}`}>
-                  <ChatInterface
-                    datasetId={datasetData.dataset_id}
-                    columns={datasetData.profile.columns}
-                    onDatasetCreated={() => setDataVersion((v) => v + 1)}
-                  />
+                  <LazySection fallbackLabel="Loading chat...">
+                    <ChatInterface
+                      datasetId={datasetData.dataset_id}
+                      columns={datasetData.profile.columns}
+                      onDatasetCreated={() => setDataVersion((v) => v + 1)}
+                    />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
               <div id="section-reports">
                 <SectionErrorBoundary key={`rep-${datasetData.dataset_id}`}>
-                  <ReportDownload datasetId={datasetData.dataset_id} />
-                  <ScheduledExports datasetId={datasetData.dataset_id} />
+                  <LazySection fallbackLabel="Loading reports and schedules...">
+                    <ReportDownload datasetId={datasetData.dataset_id} />
+                    <ScheduledExports datasetId={datasetData.dataset_id} />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
               <div id="section-overview">
                 <SectionErrorBoundary key={`prof-${datasetData.dataset_id}`}>
-                  <DataProfile data={datasetData} onCleaned={handleCleaned} />
+                  <LazySection fallbackLabel="Loading dataset overview...">
+                    <DataProfile data={datasetData} onCleaned={handleCleaned} />
+                  </LazySection>
                 </SectionErrorBoundary>
               </div>
             </>

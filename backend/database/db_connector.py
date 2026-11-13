@@ -16,7 +16,31 @@ def get_connection_with_data(df: pd.DataFrame) -> sqlite3.Connection:
     """
     conn = sqlite3.connect(":memory:")
     df.to_sql("data", conn, index=False, if_exists="replace")
+    lock_down_connection(conn)
     return conn
+
+
+_BLOCKED_SQL_FUNCTIONS = {"randomblob", "zeroblob", "load_extension"}
+_MAX_SQL_VALUE_LENGTH = 20_000_000  # bytes: caps any single string/blob a query can build
+
+
+def _sql_authorizer(action, arg1, arg2, dbname, source):
+    # 31 = SQLITE_FUNCTION, 19 = SQLITE_PRAGMA, 24 = SQLITE_ATTACH, 25 = SQLITE_DETACH
+    if action == 31 and str(arg2 or "").lower() in _BLOCKED_SQL_FUNCTIONS:
+        return sqlite3.SQLITE_DENY
+    if action in (19, 24, 25):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
+def lock_down_connection(conn: sqlite3.Connection) -> None:
+    """Call AFTER the data table is loaded: read-only, no memory-bomb functions, bounded value size."""
+    conn.execute("PRAGMA query_only = ON")
+    try:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SQL_VALUE_LENGTH)
+    except (AttributeError, sqlite3.Error):
+        pass  # Connection.setlimit needs Python 3.11+; the authorizer below still applies.
+    conn.set_authorizer(_sql_authorizer)
 
 
 def run_query(

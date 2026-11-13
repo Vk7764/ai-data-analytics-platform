@@ -1,7 +1,6 @@
 // frontend/src/components/VerifyEmailPage.jsx
 import { useState, useEffect, useRef } from "react";
-import axios from "axios";
-import { BASE_URL } from "../api";
+import api from "../api";
 import { errorDetail } from "../utils";
 
 function VerifyEmailPage({ token }) {
@@ -21,8 +20,8 @@ function VerifyEmailPage({ token }) {
       return;
     }
 
-    axios
-      .post(`${BASE_URL}/api/auth/verify-email`, { token })
+    api
+      .post("/auth/verify-email", { token })
       .then((res) => {
         setStatus("success");
         setMessage(res.data.message);

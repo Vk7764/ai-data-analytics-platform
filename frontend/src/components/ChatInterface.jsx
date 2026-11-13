@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import api from "../api";
 import { cleanMarkdown, errorDetail } from "../utils";
+import { useLanguage } from "../i18n";
 import { BarChart, Bar, LineChart, Line, ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 function downloadRowsAsCsv(rows) {
@@ -88,6 +89,7 @@ function copyToClipboard(text, buttonEl) {
 }
 
 function ChatInterface({ datasetId, columns: rawColumns = [], onDatasetCreated }) {
+  const { t } = useLanguage();
   const columns = Array.isArray(rawColumns)
     ? rawColumns.filter((c) => c && typeof c === "object")
     : [];
@@ -429,16 +431,37 @@ function ChatInterface({ datasetId, columns: rawColumns = [], onDatasetCreated }
     }
   };
 
+  const handleDownloadChat = () => {
+    const lines = messages
+      .filter((msg) => msg && typeof msg.text === "string")
+      .map((msg) => `${msg.role === "user" ? "You" : "Assistant"}: ${msg.text.replace(/\s+/g, " ").trim()}`);
+    if (lines.length === 0) return;
+    const blob = new Blob([lines.join("\n\n")], { type: "text/plain;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "chat-history.txt";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="chat-card">
       <div className="chat-header">
-        <h2>Chat With Your Data</h2>
-        <button className="reset-button" onClick={handleReset}>Reset</button>
+        <h2>{t("chatTitle")}</h2>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="reset-button" onClick={handleDownloadChat} disabled={messages.length === 0}>
+            {t("downloadChat")}
+          </button>
+          <button className="reset-button" onClick={handleReset}>{t("reset")}</button>
+        </div>
       </div>
 
       <div className="chat-messages">
         {historyLoaded && messages.length === 0 && (
-          <p className="subtitle">Ask a question about your data, e.g. "Which region had the highest sales?"</p>
+          <p className="subtitle">{t("chatEmpty")}</p>
         )}
         {messages.map((msg, idx) => (
           <div key={idx} className={`chat-bubble ${msg.role}`}>

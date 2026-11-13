@@ -7,7 +7,7 @@ import socket
 from urllib.parse import urlparse
 from typing import Optional, List, Dict, Any
 
-from backend.database.dataset_store import DB_PATH
+from backend.database.dataset_store import DB_PATH, configure_sqlite_connection
 
 MAX_SCHEDULES_PER_USER = 10
 
@@ -44,7 +44,7 @@ def validate_webhook_url(url: str) -> str:
 
 
 def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = configure_sqlite_connection(sqlite3.connect(DB_PATH, timeout=30))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS scheduled_exports (
             id TEXT PRIMARY KEY,

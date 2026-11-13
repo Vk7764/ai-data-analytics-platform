@@ -28,7 +28,9 @@ def _load_or_create_secret_key() -> str:
     import time
 
     # In production, require an explicit secret so every container and worker signs with the same key.
-    if (os.environ.get("REQUIRE_APP_SECRET_KEY") or "").strip() == "1":
+    if (os.environ.get("REQUIRE_APP_SECRET_KEY") or "").strip() == "1" or (
+        (os.environ.get("ENV") or "").strip().lower() == "production"
+    ):
         raise RuntimeError(
             "APP_SECRET_KEY is required (REQUIRE_APP_SECRET_KEY=1) but is not set. "
             "Set the same APP_SECRET_KEY for every container and worker."

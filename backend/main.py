@@ -1,3 +1,4 @@
+import spaces
 # backend/main.py
 from dotenv import load_dotenv
 load_dotenv()
@@ -373,3 +374,7 @@ app.include_router(router, prefix="/api")
 @app.get("/")
 def root():
     return {"message": "AI Data Analytics Platform is running"}
+
+@spaces.GPU
+def _hf_zerogpu_dummy():
+    pass

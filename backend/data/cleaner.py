@@ -910,8 +910,22 @@ class DataCleaner:
         parsed = original.astype(str).apply(
             lambda v: DataCleaner._smart_parse_number(v, period_is_thousands)
         )
-        # Entries that cannot be parsed keep their original content instead of being blanked.
-        df[column] = parsed.where(parsed.notna() | original.isna(), original)
+        # Strict conversion: the column always becomes a real numeric dtype.
+        # Entries that cannot be parsed become missing (NaN) so they can be filled or dropped afterwards.
+        numeric = pd.to_numeric(parsed, errors="coerce")
+        numeric = numeric.where(original.notna(), np.nan)
+        non_null = numeric.dropna()
+        if (
+            len(non_null) == len(numeric)
+            and len(non_null) > 0
+            and bool(np.isfinite(non_null).all())
+            and bool((non_null == non_null.round()).all())
+            and bool((non_null.abs() < 9e15).all())
+        ):
+            numeric = numeric.astype("int64")
+        else:
+            numeric = numeric.astype("float64")
+        df[column] = numeric
         return df
 
     @staticmethod

@@ -6,7 +6,10 @@ if not hasattr(huggingface_hub, "HfFolder"):
         @classmethod
         def save_token(cls, token): pass
     huggingface_hub.HfFolder = _DummyHfFolder
-import spaces
+try:
+    import spaces
+except ImportError:
+    spaces = None
 # backend/main.py
 from dotenv import load_dotenv
 load_dotenv()

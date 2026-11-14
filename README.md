@@ -1,3 +1,12 @@
+---
+title: AI Data Analytics Backend
+emoji: 📊
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+app_port: 8000
+---
+
 # AI Data Analytics Platform
 
 AI-assisted data analytics platform for dataset profiling, cleaning previews, saved analyses, reports, forecasts, anomaly detection, root-cause analysis, chat with data, scheduled exports, and sandboxed analysis execution.

@@ -1,4 +1,12 @@
 import os
+# Auto-parse multi-line .env secret if pasted as a single block in HF Secrets
+for _k, _v in list(os.environ.items()):
+    if "\n" in _v and "=" in _v:
+        for _line in _v.splitlines():
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _ek, _ev = _line.split("=", 1)
+                os.environ[_ek.strip()] = _ev.strip().strip('\"').strip("'")
 import huggingface_hub
 if not hasattr(huggingface_hub, "HfFolder"):
     class _DummyHfFolder:

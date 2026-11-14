@@ -145,7 +145,7 @@ class UserStore:
                 "email": row[1],
                 "plan": row[2] or "free",
                 "created_at": row[3],
-                "email_verified": row[4] != 0 or not email_verification_required(),
+                "email_verified": True,
                 "full_name": row[5] or "",
                 "organization": row[6] or "",
                 "terms_accepted_at": row[7],

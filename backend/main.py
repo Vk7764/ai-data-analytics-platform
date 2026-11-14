@@ -1,3 +1,11 @@
+import huggingface_hub
+if not hasattr(huggingface_hub, "HfFolder"):
+    class _DummyHfFolder:
+        @classmethod
+        def get_token(cls): return None
+        @classmethod
+        def save_token(cls, token): pass
+    huggingface_hub.HfFolder = _DummyHfFolder
 import spaces
 # backend/main.py
 from dotenv import load_dotenv

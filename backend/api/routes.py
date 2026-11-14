@@ -1958,7 +1958,6 @@ def rename_dataset(dataset_id: str, request: RenameDatasetRequest, current_user:
     if not base_name:
         raise HTTPException(
             status_code=400,
-            detail="Dataset name must contain letters, numbers, spaces, underscores or hyphens.",
         )
 
     clean_name = f"{base_name}{extension}"

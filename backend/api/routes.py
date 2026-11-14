@@ -3418,6 +3418,9 @@ class ScheduleRequest(BaseModel):
 
 @router.post("/schedules")
 def create_schedule(request: ScheduleRequest, current_user: str = Depends(require_premium)):
+    _owner = UserStore.get_user(current_user) or {}
+    if str(_owner.get("email") or "").strip().lower() != "vikashkumar47023@gmail.com":
+        raise HTTPException(status_code=403, detail="Scheduled exports are not available on your plan yet.")
     get_dataset_or_404(request.dataset_id, current_user)  # ownership check
 
     allowed_formats = {"pdf", "excel", "xlsx", "pptx", "csv", "json", "sql"}

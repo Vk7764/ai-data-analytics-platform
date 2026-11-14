@@ -4,7 +4,7 @@ import api from "../api";
 import { errorDetail } from "../utils";
 
 function ScheduledExports({ datasetId }) {
-  const [isPremium, setIsPremium] = useState(false);
+  const [userEmail, setUserEmail] = useState("");
   const [schedules, setSchedules] = useState([]);
   const [format, setFormat] = useState("pdf");
   const [frequency, setFrequency] = useState("weekly");
@@ -15,10 +15,15 @@ function ScheduledExports({ datasetId }) {
 
   const loadSchedules = async () => {
     try {
-      const [meRes, schedulesRes] = await Promise.all([api.get("/me"), api.get("/schedules")]);
+      const meRes = await api.get("/me");
+      setUserEmail(String(meRes?.data?.email || "").trim().toLowerCase());
+    } catch (err) {
+      // ignore
+    }
 
-      setIsPremium(meRes?.data?.plan === "premium");
-
+    // Free users get 403 from /schedules; that must not hide the section, so it is handled separately.
+    try {
+      const schedulesRes = await api.get("/schedules");
       const scheduleList = Array.isArray(schedulesRes?.data?.schedules)
         ? schedulesRes.data.schedules
         : [];
@@ -29,7 +34,7 @@ function ScheduledExports({ datasetId }) {
         )
       );
     } catch (err) {
-      // ignore
+      setSchedules([]);
     }
   };
 
@@ -38,9 +43,14 @@ function ScheduledExports({ datasetId }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasetId]);
 
-  if (!isPremium) return null;
+  const ADMIN_EMAIL = "vikashkumar47023@gmail.com";
 
-  const handleCreate = async () => {
+  const handleCreate = async (e) => {
+    if (userEmail !== ADMIN_EMAIL) {
+      if (e && typeof e.preventDefault === "function") e.preventDefault();
+      alert("Premium Feature: Scheduled Exports use karne ke liye Premium plan me upgrade karein!");
+      return;
+    }
     if (!destination.trim()) {
       setMessage("Please enter a destination.");
       return;

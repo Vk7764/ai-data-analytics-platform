@@ -9,7 +9,7 @@ if not hasattr(huggingface_hub, "HfFolder"):
 try:
     import spaces
 except ImportError:
-    spaces = None
+    spaces = type("spaces", (), {"GPU": lambda *a, **kw: (a[0] if a and callable(a[0]) else (lambda f: f))})
 # backend/main.py
 from dotenv import load_dotenv
 load_dotenv()

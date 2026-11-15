@@ -1017,8 +1017,20 @@ class DataCleaner:
             r"^-?\d{1,3}(?:,\d{3})+(?:\.\d+)?$|^-?\d*\.\d{1,2}$|^-?\d*\.\d{4,}$", regex=True
         ).any()
         period_is_thousands = bool(european_evidence and not us_evidence)
-        parsed = original.astype(str).apply(
-            lambda v: DataCleaner._smart_parse_number(v, period_is_thousands)
+        def _aggressive_clean(value):
+            if pd.isna(value):
+                return np.nan
+            text = str(value)
+            # Currency words and symbols first ("Rs. 3208.87", "INR 1791.4", "₹1598.97").
+            text = text.replace("₹", "")
+            text = re.sub(r"(?i)(?:rs|inr)\.?", "", text)
+            # Then drop every remaining letter, space and symbol except digits, '.', ',' and '-'
+            # ("1 pc" -> "1", "twenty-five" -> "-" which cannot be parsed and becomes NaN).
+            text = re.sub(r"[^0-9.,\-]", "", text)
+            return text.strip(".,")
+
+        parsed = original.apply(
+            lambda v: DataCleaner._smart_parse_number(_aggressive_clean(v), period_is_thousands)
         )
         # Strict conversion: the column always becomes a real numeric dtype.
         # Entries that cannot be parsed become missing (NaN) so they can be filled or dropped afterwards.

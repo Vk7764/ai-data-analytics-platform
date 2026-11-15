@@ -15,6 +15,9 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
   const [adviceLoading, setAdviceLoading] = useState(false);
   // Pending preview awaiting explicit confirmation: { label, applyPath, payload, failureMessage, data }
   const [pendingPreview, setPendingPreview] = useState(null);
+  const [selectedKeys, setSelectedKeys] = useState([]);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState(null);
 
   const fetchAdvice = async () => {
     setAdviceLoading(true);
@@ -132,6 +135,115 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
   if (loading) return <div className="cleaning-card"><p>Checking for data quality issues...</p></div>;
   if (error && !issues) return <div className="cleaning-card"><p className="error-text">{error}</p></div>;
   if (!issues) return null;
+
+  // ---------- Bulk fix: one safe default action per issue type ----------
+  const bulkItems = [];
+  (issues.numeric_format_issues || []).forEach((n) =>
+    bulkItems.push({ key: `clean_numeric_format|${n.column}`, action: "clean_numeric_format", column: n.column, strategy: "mode", risky: false })
+  );
+  (issues.fuzzy_category_issues || []).forEach((f) =>
+    bulkItems.push({ key: `normalize_city_names|${f.column}`, action: "normalize_city_names", column: f.column, strategy: "mode", risky: false })
+  );
+  (issues.email_format_issues || []).forEach((em) => {
+    if (em.invalid_count > 0 || em.has_case_issue) {
+      bulkItems.push({ key: `fix_emails|${em.column}`, action: "fix_emails", column: em.column, strategy: "mode", risky: false });
+    }
+  });
+  (issues.inconsistent_values || []).forEach((inc) =>
+    bulkItems.push({ key: `normalize_text|${inc.column}`, action: "normalize_text", column: inc.column, strategy: "mode", risky: false })
+  );
+  (issues.date_format_issues || []).forEach((d) =>
+    bulkItems.push({ key: `normalize_date_format|${d.column}`, action: "normalize_date_format", column: d.column, strategy: "mode", risky: false })
+  );
+  // Filling missing values changes data content, so these are selectable but never part of "Select All".
+  (issues.missing_values || []).forEach((m) =>
+    bulkItems.push({ key: `fill_missing|${m.column}`, action: "fill_missing", column: m.column, strategy: m.is_numeric ? "median" : "mode", risky: true })
+  );
+
+  const safeBulkItems = bulkItems.filter((item) => !item.risky);
+  const selectedItems = bulkItems.filter((item) => selectedKeys.includes(item.key));
+  const allBulkSelected =
+    safeBulkItems.length > 0 && safeBulkItems.every((item) => selectedKeys.includes(item.key));
+
+  const toggleBulkItem = (key) => {
+    setSelectedKeys((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedKeys(allBulkSelected ? [] : safeBulkItems.map((item) => item.key));
+  };
+
+  const renderBulkCheck = (action, column) => {
+    const key = `${action}|${column}`;
+    if (!bulkItems.some((item) => item.key === key)) return null;
+    return (
+      <input
+        type="checkbox"
+        aria-label={`Select ${action} for ${column}`}
+        checked={selectedKeys.includes(key)}
+        disabled={actionLoading}
+        onChange={() => toggleBulkItem(key)}
+        style={{ marginRight: "8px" }}
+      />
+    );
+  };
+
+  const handleBulkFix = async () => {
+    if (selectedItems.length === 0 || actionLoading) return;
+    if (
+      !window.confirm(
+        `Apply ${selectedItems.length} fix(es) in one step? You can revert all of them with a single Undo.`
+      )
+    ) {
+      return;
+    }
+
+    setBulkLoading(true);
+    setActionLoading(true);
+    setError(null);
+    setBulkMessage(null);
+
+    try {
+      const response = await api.post(`/dataset/${datasetId}/clean/bulk`, {
+        operations: selectedItems.map((item) => ({
+          action: item.action,
+          column: item.column,
+          strategy: item.strategy,
+        })),
+      });
+
+      const skippedList = Array.isArray(response.data?.skipped) ? response.data.skipped : [];
+      const appliedList = Array.isArray(response.data?.applied) ? response.data.applied : [];
+
+      onCleaned(response.data);
+      await fetchIssues();
+      setRefreshKey((k) => k + 1);
+      setSelectedKeys([]);
+
+      try {
+        window.dispatchEvent(
+          new CustomEvent("dataset-changed", { detail: { dataset_id: datasetId, source: "bulk_clean" } })
+        );
+      } catch {
+        // CustomEvent unavailable: other panels simply will not show their stale warning.
+      }
+
+      setBulkMessage(
+        `Applied ${appliedList.length} fix(es).` +
+          (skippedList.length > 0
+            ? ` Skipped ${skippedList.length}: ${skippedList
+                .slice(0, 5)
+                .map((s) => `${s.column || s.action} (${s.reason})`)
+                .join("; ")}`
+            : "")
+      );
+    } catch (err) {
+      setError(errorDetail(err, "Bulk fix failed."));
+    } finally {
+      setBulkLoading(false);
+      setActionLoading(false);
+    }
+  };
 
   const hasDuplicates = Number(issues?.duplicate_rows?.count) > 0;
   const hasKeyDuplicates = issues.key_duplicates && issues.key_duplicates.length > 0;
@@ -295,6 +407,39 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
         </div>
       )}
 
+      {bulkItems.length > 0 && (
+        <div className="history-panel" style={{ marginBottom: "16px" }}>
+          <div className="history-panel-row">
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px" }}>
+              <input
+                type="checkbox"
+                checked={allBulkSelected}
+                disabled={actionLoading || safeBulkItems.length === 0}
+                onChange={toggleSelectAll}
+              />
+              {allBulkSelected ? "Deselect All" : "Select All"}
+            </label>
+            <span className="undo-label">
+              {selectedItems.length} selected. Select All skips "Missing values" items; tick those yourself if wanted.
+            </span>
+            <button
+              type="button"
+              disabled={actionLoading || selectedItems.length === 0}
+              onClick={handleBulkFix}
+            >
+              {bulkLoading ? "Fixing..." : `Fix Selected Items (${selectedItems.length})`}
+            </button>
+          </div>
+          {bulkLoading && (
+            <p className="subtitle" style={{ fontSize: "12px", margin: "8px 0 0" }}>
+              Applying selected fixes in one step. Please wait...
+            </p>
+          )}
+        </div>
+      )}
+
+      {bulkMessage && <p className="success-text">{bulkMessage}</p>}
+
       {hasDuplicates && (
         <div className="issue-row">
           <div>
@@ -324,6 +469,7 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
       {hasMissing && issues.missing_values.map((m) => (
         <div className="issue-row" key={m.column}>
           <div>
+            {renderBulkCheck("fill_missing", m.column)}
             <strong>Missing values in '{m.column}'</strong>
             <p>{m.missing_count} missing ({m.missing_percent}%)</p>
           </div>
@@ -379,6 +525,7 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
       {hasInconsistent && issues.inconsistent_values.map((inc) => (
         <div className="issue-row" key={inc.column}>
           <div>
+            {renderBulkCheck("normalize_text", inc.column)}
             <strong>Inconsistent values in '{inc.column}'</strong>
             <p>
               {inc.raw_unique_count} raw variants collapse into {inc.normalized_unique_count} actual categories
@@ -396,6 +543,7 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
       {hasFuzzy && issues.fuzzy_category_issues.map((f) => (
         <div className="issue-row" key={`fuzzy-${f.column}`}>
           <div>
+            {renderBulkCheck("normalize_city_names", f.column)}
             <strong>Possible duplicate categories in '{f.column}' (fuzzy match)</strong>
             <p>
               {f.affected_groups.length > 0 && (
@@ -417,6 +565,7 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
       {hasDateFormatIssues && issues.date_format_issues.map((d) => (
         <div className="issue-row" key={d.column}>
           <div>
+            {renderBulkCheck("normalize_date_format", d.column)}
             <strong>Mixed date formats in '{d.column}'</strong>
             <p>
               Formats found: {Object.entries(d.formats_found).map(([fmt, count]) => `${fmt} (${count})`).join(", ")}
@@ -431,6 +580,7 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
       {hasNumericFormatIssues && issues.numeric_format_issues.map((n) => (
         <div className="issue-row" key={n.column}>
           <div>
+            {renderBulkCheck("clean_numeric_format", n.column)}
             <strong>Numbers stored as text in '{n.column}'</strong>
             <p>{n.description}</p>
           </div>
@@ -443,6 +593,7 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
       {hasEmailIssues && issues.email_format_issues.map((e) => (
         <div className="issue-row" key={`email-${e.column}`}>
           <div>
+            {renderBulkCheck("fix_emails", e.column)}
             <strong>Email format issues in '{e.column}'</strong>
             <p>
               {e.invalid_count > 0 && `${e.invalid_count} malformed (e.g. ${e.example_invalid.join(", ")}) `}

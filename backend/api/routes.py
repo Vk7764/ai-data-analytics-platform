@@ -695,6 +695,141 @@ def clean_dataset(dataset_id: str, request: CleanRequest, current_user: str = De
     }
 
 
+class BulkCleanOperation(BaseModel):
+    action: str
+    column: Optional[str] = None
+    strategy: str = "mode"
+
+
+class BulkCleanRequest(BaseModel):
+    operations: List[BulkCleanOperation]
+
+
+# Only actions with a safe, predictable default may run in bulk.
+BULK_ALLOWED_ACTIONS = {
+    "clean_numeric_format",
+    "normalize_city_names",
+    "fix_emails",
+    "normalize_text",
+    "normalize_date_format",
+    "fill_missing",
+}
+BULK_ALLOWED_STRATEGIES = {"mode", "median"}
+BULK_MAX_OPERATIONS = 50
+
+
+@router.post("/dataset/{dataset_id}/clean/bulk")
+def clean_dataset_bulk(
+    dataset_id: str,
+    request: BulkCleanRequest,
+    current_user: str = Depends(require_auth),
+    _rl=Depends(rate_limit(write_limiter)),
+    _wl=Depends(dataset_write_lock),
+):
+    """
+    Applies several cleaning operations one after another on an in-memory copy, saves the dataset once,
+    creates ONE undo snapshot and writes ONE audit-log entry. A failing operation is skipped and reported.
+    """
+    df = get_dataset_or_404(dataset_id, current_user)
+
+    operations = request.operations or []
+    if not operations:
+        raise HTTPException(status_code=400, detail="Select at least one item to fix.")
+    if len(operations) > BULK_MAX_OPERATIONS:
+        raise HTTPException(status_code=400, detail=f"At most {BULK_MAX_OPERATIONS} items can be fixed at once.")
+
+    original_df = df.copy()
+    working = df
+    applied: List[str] = []
+    skipped: List[Dict[str, Any]] = []
+
+    for op in operations:
+        action = str(op.action or "").strip()
+        column = str(op.column or "").strip() or None
+
+        if action not in BULK_ALLOWED_ACTIONS or action not in CLEAN_ACTIONS:
+            skipped.append({"action": action, "column": column, "reason": "This action is not allowed in bulk mode."})
+            continue
+        if not column or column not in working.columns:
+            skipped.append({"action": action, "column": column, "reason": "Column not found."})
+            continue
+
+        strategy = op.strategy if op.strategy in BULK_ALLOWED_STRATEGIES else "mode"
+        single_request = CleanRequest(action=action, column=column, strategy=strategy)
+
+        try:
+            cleaned = CLEAN_ACTIONS[action](working, single_request)
+        except ValueError as e:
+            skipped.append({"action": action, "column": column, "reason": str(e)})
+            continue
+        except Exception:
+            skipped.append({"action": action, "column": column, "reason": "The action failed."})
+            continue
+
+        if not isinstance(cleaned, pd.DataFrame):
+            skipped.append({"action": action, "column": column, "reason": "The action returned an unexpected result."})
+            continue
+
+        working = cleaned
+        applied.append(_describe_action(single_request))
+
+    if applied:
+        try:
+            DatasetStore.update(dataset_id, current_user, working)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail="Dataset update failed.") from e
+
+        try:
+            DatasetStore.save_snapshot(dataset_id, original_df, f"Bulk fix ({len(applied)} items)")
+        except Exception:
+            pass
+
+        try:
+            DatasetStore.log_action(
+                dataset_id,
+                "bulk_clean",
+                None,
+                details="Bulk action applied: " + "; ".join(applied),
+            )
+        except Exception:
+            pass
+
+    final_df = working
+    try:
+        stored_df = DatasetStore.get(dataset_id, current_user)
+        if isinstance(stored_df, pd.DataFrame):
+            final_df = stored_df
+    except Exception:
+        pass
+
+    try:
+        profile = DataProfiler.profile(final_df)
+    except Exception:
+        profile = {}
+    if not isinstance(profile, dict):
+        profile = {}
+
+    try:
+        preview = to_json_safe_records(final_df, 10)
+    except Exception:
+        preview = []
+    if not isinstance(preview, list):
+        preview = []
+
+    return {
+        "dataset_id": str(dataset_id),
+        "message": (
+            f"Bulk action applied: {len(applied)} fix(es), {len(skipped)} skipped."
+            if applied
+            else "No changes were applied."
+        ),
+        "applied": applied,
+        "skipped": skipped,
+        "profile": profile,
+        "preview": preview,
+    }
+
+
 def _preview_json_value(value: Any) -> Any:
     """JSON-safe preview value: missing and non-finite numbers become null; numpy/timestamp values become plain types."""
     if value is None:

@@ -1,5 +1,6 @@
 # backend/data/cleaner.py
 import re
+import difflib
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
@@ -590,6 +591,115 @@ class DataCleaner:
         email_pattern = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
         mask = df[column].notna() & ~df[column].astype(str).apply(lambda v: bool(email_pattern.match(v)))
         df.loc[mask, column] = np.nan
+        return df
+
+    @staticmethod
+    def fix_emails(df: pd.DataFrame, column: str) -> pd.DataFrame:
+        """
+        Repairs common email typos: removes spaces and stray punctuation, lowercases, drops leading '@',
+        collapses repeated '@' and '.', and fixes frequent domain misspellings (gmial.com, gmail.con, ...).
+        Addresses that are still malformed afterwards become missing instead of staying wrong.
+        """
+        if column not in df.columns:
+            raise ValueError(f"Column '{column}' does not exist.")
+
+        df = df.copy()
+        pattern = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+        domain_fixes = {
+            "gmial.com": "gmail.com", "gmal.com": "gmail.com", "gamil.com": "gmail.com",
+            "gmail.con": "gmail.com", "gmail.co": "gmail.com", "gmai.com": "gmail.com",
+            "yahooo.com": "yahoo.com", "yaho.com": "yahoo.com", "yahoo.con": "yahoo.com",
+            "hotmial.com": "hotmail.com", "hotmail.con": "hotmail.com",
+            "outlok.com": "outlook.com", "outlook.con": "outlook.com",
+        }
+
+        def fix(value):
+            if pd.isna(value):
+                return np.nan
+            text = re.sub(r"\s+", "", str(value).strip().lower())
+            text = text.strip(".,;:<>()[]\"'")
+            text = text.lstrip("@")
+            text = re.sub(r"@{2,}", "@", text)
+            text = re.sub(r"\.{2,}", ".", text)
+            if "@" in text:
+                local, domain = text.rsplit("@", 1)
+                text = f"{local}@{domain_fixes.get(domain, domain)}"
+            return text if pattern.match(text) else np.nan
+
+        df[column] = df[column].astype(object).apply(fix)
+        return df
+
+    @staticmethod
+    def normalize_city_names(df: pd.DataFrame, column: str) -> pd.DataFrame:
+        """
+        Cleans a name-like text column: trims, collapses spaces, applies Title Case, and merges close
+        spelling variants (for example 'Mumbay' -> 'Mumbai') into the most frequent spelling.
+        """
+        if column not in df.columns:
+            raise ValueError(f"Column '{column}' does not exist.")
+
+        df = df.copy()
+        series = df[column].astype(object)
+        present = series.notna()
+        if not present.any():
+            return df
+
+        cleaned = (
+            series[present].astype(str).str.strip().str.replace(r"\s+", " ", regex=True).str.title()
+        )
+        counts = cleaned.value_counts()
+        mapping = {}
+
+        # Fuzzy merging is skipped for very high-cardinality columns to keep the request fast.
+        if len(counts) <= 2000:
+            canonical_lowers = []
+            lower_to_canonical = {}
+            for value in counts.index:  # most frequent spelling first, so it becomes the canonical form
+                target = value
+                if len(value) >= 4 and canonical_lowers:
+                    match = difflib.get_close_matches(value.lower(), canonical_lowers, n=1, cutoff=0.85)
+                    if match:
+                        target = lower_to_canonical[match[0]]
+                if target == value:
+                    canonical_lowers.append(value.lower())
+                    lower_to_canonical[value.lower()] = value
+                mapping[value] = target
+        else:
+            mapping = {value: value for value in counts.index}
+
+        df.loc[present, column] = cleaned.map(mapping)
+        return df
+
+    @staticmethod
+    def trim_text_all(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Whole-dataset text cleanup: trims and collapses whitespace in every text column, turns blank
+        strings into missing values, and unifies capitalization variants of the same value
+        (for example 'north', 'North', 'NORTH') into the most frequent spelling. Email columns are only trimmed.
+        """
+        df = df.copy()
+        for col in df.columns:
+            if not (pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col])):
+                continue
+
+            series = df[col].astype(object)
+            present = series.notna()
+            if not present.any():
+                continue
+
+            tidy = series[present].astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+            series.loc[present] = tidy
+            series = series.replace("", np.nan)
+            df[col] = series
+
+            if "email" in str(col).lower() or ChartEngine.is_identifier_name(col):
+                continue
+
+            non_null = df[col].dropna().astype(str)
+            if non_null.empty:
+                continue
+            if non_null.str.lower().nunique() < non_null.nunique():
+                df = DataCleaner.normalize_text(df, col)
         return df
 
     @staticmethod

@@ -563,6 +563,9 @@ def _describe_action(request: "CleanRequest") -> str:
         "add_calculated_column": f"Added calculated column '{request.new_name}' ({request.column} {request.operator} {request.second_column})",
         "lowercase_column": f"Lowercased values in '{request.column}'",
         "flag_invalid_email_as_missing": f"Flagged malformed emails as missing in '{request.column}'",
+        "fix_emails": f"Fixed email typos in '{request.column}'",
+        "normalize_city_names": f"Title-cased and merged spelling variants in '{request.column}'",
+        "trim_text_all": "Trimmed whitespace and unified capitalization in all text columns",
     }
     return labels.get(request.action, request.action)
 
@@ -595,9 +598,12 @@ CLEAN_ACTIONS = {
     ),
     "lowercase_column": lambda df, req: DataCleaner.lowercase_column(df, req.column),
     "flag_invalid_email_as_missing": lambda df, req: DataCleaner.flag_invalid_email_as_missing(df, req.column),
+    "fix_emails": lambda df, req: DataCleaner.fix_emails(df, req.column),
+    "normalize_city_names": lambda df, req: DataCleaner.normalize_city_names(df, req.column),
+    "trim_text_all": lambda df, req: DataCleaner.trim_text_all(df),
 }
 
-ACTIONS_REQUIRING_COLUMN = set(CLEAN_ACTIONS.keys()) - {"remove_duplicates", "auto_clean_safe", "sample_rows"}
+ACTIONS_REQUIRING_COLUMN = set(CLEAN_ACTIONS.keys()) - {"remove_duplicates", "auto_clean_safe", "sample_rows", "trim_text_all"}
 
 
 @router.post("/dataset/{dataset_id}/clean")
@@ -647,6 +653,24 @@ def clean_dataset(dataset_id: str, request: CleanRequest, current_user: str = De
     except Exception:
         pass
 
+    # Re-read what was actually stored, so the response always reflects the saved data.
+    stored_note = None
+    try:
+        stored_df = DatasetStore.get(dataset_id, current_user)
+        if isinstance(stored_df, pd.DataFrame):
+            df = stored_df
+            if (
+                request.action == "clean_numeric_format"
+                and request.column in df.columns
+                and not pd.api.types.is_numeric_dtype(df[request.column])
+            ):
+                stored_note = (
+                    f"Warning: '{request.column}' is still stored as text after conversion. "
+                    "Use Undo and contact support with this column name."
+                )
+    except Exception:
+        pass
+
     try:
         profile = DataProfiler.profile(df)
     except Exception:
@@ -665,7 +689,7 @@ def clean_dataset(dataset_id: str, request: CleanRequest, current_user: str = De
 
     return {
         "dataset_id": str(dataset_id),
-        "message": f"Action '{request.action}' applied successfully.",
+        "message": stored_note or f"Action '{request.action}' applied successfully.",
         "profile": profile,
         "preview": preview,
     }

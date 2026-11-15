@@ -110,6 +110,13 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
       onCleaned(response.data);
       await fetchIssues();
       setRefreshKey((k) => k + 1);
+      try {
+        window.dispatchEvent(
+          new CustomEvent("dataset-changed", { detail: { dataset_id: datasetId, source: "data_cleaning" } })
+        );
+      } catch {
+        // CustomEvent unavailable: the plan card simply will not show its stale warning.
+      }
     } catch (err) {
       setError(errorDetail(err, failureMessage));
     } finally {
@@ -154,6 +161,10 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
 
       <button className="demo-button" disabled={actionLoading} onClick={() => handleAction("auto_clean_safe")}>
         ✨ Auto-Clean Safe Issues
+      </button>
+
+      <button className="demo-button" disabled={actionLoading} onClick={() => handleAction("trim_text_all")}>
+        🧹 Smart Text Cleanup
       </button>
 
       <button className="demo-button" disabled={adviceLoading} onClick={fetchAdvice}>
@@ -392,9 +403,14 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
               )}
             </p>
           </div>
-          <button disabled={actionLoading} onClick={() => handleAction("normalize_text_aggressive", f.column)}>
-            Approve &amp; Merge
-          </button>
+          <div className="button-group">
+            <button disabled={actionLoading} onClick={() => handleAction("normalize_city_names", f.column)}>
+              Title Case &amp; Fix Typos
+            </button>
+            <button disabled={actionLoading} onClick={() => handleAction("normalize_text_aggressive", f.column)}>
+              Approve &amp; Merge
+            </button>
+          </div>
         </div>
       ))}
 
@@ -434,6 +450,9 @@ function DataCleaning({ datasetId, dataVersion = 0, onCleaned }) {
             </p>
           </div>
           <div className="button-group">
+            <button disabled={actionLoading} onClick={() => handleAction("fix_emails", e.column)}>
+              Fix Email Typos
+            </button>
             {e.invalid_count > 0 && (
               <button disabled={actionLoading} onClick={() => handleAction("flag_invalid_email_as_missing", e.column)}>
                 Flag as Missing

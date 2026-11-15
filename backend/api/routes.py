@@ -802,6 +802,24 @@ def clean_dataset_bulk(
     except Exception:
         pass
 
+    # Verify what is really stored: a numeric conversion must read back as a number.
+    for op in operations:
+        if str(op.action or "").strip() != "clean_numeric_format":
+            continue
+        op_column = str(op.column or "").strip()
+        if (
+            op_column in final_df.columns
+            and not pd.api.types.is_numeric_dtype(final_df[op_column])
+            and final_df[op_column].notna().any()
+        ):
+            skipped.append(
+                {
+                    "action": "clean_numeric_format",
+                    "column": op_column,
+                    "reason": "still stored as text after saving. The server may be running old code; rebuild and restart it.",
+                }
+            )
+
     try:
         profile = DataProfiler.profile(final_df)
     except Exception:

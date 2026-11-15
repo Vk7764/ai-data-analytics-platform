@@ -410,18 +410,27 @@ class DataCleaner:
             if leading_zero_ratio > 0.3:
                 continue
 
-            has_symbols = series.str.contains(r"[\$,%]").any()
+            has_symbols = series.str.contains(r"[\$,%₹€£]|(?i:\brs\b\.?|\binr\b)").any()
+
+            # "Numeric intent": a number with an optional currency prefix or a short unit suffix
+            # ("₹1598.97", "Rs. 3208.87", "INR 1791.4", "1 pc"). Codes like "A101" or dates do not match.
+            numeric_intent = re.compile(
+                r"^\s*(?:₹|\$|€|£|rs\.?|inr|usd)?\s*-?\d[\d,]*(?:\.\d+)?\s*"
+                r"(?:%|pcs?|kgs?|g|units?|nos?|qty|items?|yrs?|years?)?\s*$",
+                flags=re.IGNORECASE,
+            )
 
             numeric_parsed = series.apply(DataCleaner._smart_parse_number)
-            valid_ratio = numeric_parsed.notna().mean()
+            looks_numeric = numeric_parsed.notna() | series.apply(lambda v: bool(numeric_intent.match(v)))
+            valid_ratio = looks_numeric.mean()
 
-            threshold = 0.5 if has_symbols else 0.9
-            if valid_ratio < threshold:
+            # Works for any dataset size; at least 2 numeric-looking values are needed to avoid one-off false alarms.
+            if valid_ratio < 0.3 or int(looks_numeric.sum()) < 2:
                 continue
 
             symbols_found = []
             if has_symbols:
-                symbols_found = sorted(set("".join(series.str.findall(r"[\$,%]").sum())))
+                symbols_found = sorted(set("".join(series.str.findall(r"[\$,%₹€£]").sum())))
 
             if symbols_found:
                 description = (
